@@ -1,51 +1,37 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import React from "react";
+import CodeEditor from "./components/CodeEditor";
+import { pickAndOpenFile, pickAndSaveFile } from "./lib/fs";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+export default function App() {
+  const [code, setCode] = React.useState<string>("");
+  const [path, setPath] = React.useState<string | null>(null);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div style={{ height: "100vh", display: "grid", gridTemplateRows: "auto 1fr" }}>
+      <div style={{ padding: 8, display: "flex", gap: 8 }}>
+        <button
+          onClick={async () => {
+            const res = await pickAndOpenFile();
+            setPath(res.path);
+            setCode(res.content);
+          }}
+        >
+          Open…
+        </button>
+        <button
+          onClick={async () => {
+            const saved = await pickAndSaveFile(code);
+            if (saved) setPath(saved);
+          }}
+        >
+          Save As…
+        </button>
+        <div style={{ marginLeft: "auto", opacity: 0.7 }}>
+          {path ?? "untitled"}
+        </div>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <CodeEditor value={code} onChange={setCode} language="typescript" />
+    </div>
   );
 }
-
-export default App;
