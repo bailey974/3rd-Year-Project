@@ -1,4 +1,5 @@
-# School of Computing  
+ls
+clea# School of Computing  
 ## CSC1049 Year 3 Project Proposal Form  
 
 ---
@@ -10,7 +11,7 @@
 - Name and ID number: *Hoang Xuan Hai Mai* - *22115838*  
 
 **Student 2:**  
-- Name and ID number: **  - **  
+- Name and ID number: *Bailey Anthony Scanlan*  - *23316363*  
 
 **Staff Member Consulted:**  
 - 
@@ -39,7 +40,6 @@ The platform is designed with performance as a priority, targeting ≤8ms local 
 
 ## Programming Languages  
 
-- Rust (primary for native client)
 - Python
 - TypeScript/JavaScript
 - SQL
