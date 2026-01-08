@@ -1,37 +1,59 @@
-import React from "react";
+import { useState } from "react";
 import CodeEditor from "./components/CodeEditor";
-import { pickAndOpenFile, pickAndSaveFile } from "./lib/fs";
+import TerminalPanel from "./components/TerminalPanel";
 
 export default function App() {
-  const [code, setCode] = React.useState<string>("");
-  const [path, setPath] = React.useState<string | null>(null);
+  const [showTerminal, setShowTerminal] = useState(true);
 
   return (
-    <div style={{ height: "100vh", display: "grid", gridTemplateRows: "auto 1fr" }}>
-      <div style={{ padding: 8, display: "flex", gap: 8 }}>
-        <button
-          onClick={async () => {
-            const res = await pickAndOpenFile();
-            setPath(res.path);
-            setCode(res.content);
-          }}
-        >
-          Open…
-        </button>
-        <button
-          onClick={async () => {
-            const saved = await pickAndSaveFile(code);
-            if (saved) setPath(saved);
-          }}
-        >
-          Save As…
-        </button>
-        <div style={{ marginLeft: "auto", opacity: 0.7 }}>
-          {path ?? "untitled"}
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+      {/* Toolbar */}
+      <div
+        style={{
+          height: 44,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "0 12px",
+          borderBottom: "1px solid #e5e7eb",
+          flex: "0 0 auto",
+        }}
+      >
+        <div style={{ fontWeight: 600 }}>Collaborative Code Editor</div>
+
+        <div style={{ marginLeft: "auto" }}>
+          <button
+            onClick={() => setShowTerminal((v) => !v)}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            {showTerminal ? "Hide Terminal" : "Show Terminal"}
+          </button>
         </div>
       </div>
 
-      <CodeEditor value={code} onChange={setCode} language="typescript" />
+      {/* Editor area */}
+      <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+        <CodeEditor />
+      </div>
+
+      {/* Terminal dock */}
+      {showTerminal && (
+        <div
+          style={{
+            height: 240,
+            borderTop: "1px solid #e5e7eb",
+            flex: "0 0 auto",
+          }}
+        >
+          <TerminalPanel />
+        </div>
+      )}
     </div>
   );
 }
