@@ -45,10 +45,11 @@ struct TerminalExitEvent {
 fn default_shell_command() -> CommandBuilder {
   #[cfg(target_os = "windows")]
   {
-    let mut cmd = CommandBuilder::new("powershell.exe");
-    cmd.args(["-NoLogo"]);
+    let mut cmd = CommandBuilder::new("cmd.exe");
+    cmd.args(["/Q", "/K"]); // quiet + keep open
     cmd
   }
+
 
   #[cfg(not(target_os = "windows"))]
   {
