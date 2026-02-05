@@ -1,11 +1,15 @@
-import "./monacoWorkers";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "@xterm/xterm/css/xterm.css";
-import App from "./renderer/App";
+import App from "./App";
+import { installFatalOverlay } from "./fatalOverlay";
+import { CollabProvider } from "./collab/CollabProvider";
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+installFatalOverlay();
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+    <CollabProvider wsUrl="ws://localhost:1234" defaultRoomId="default-room" displayName="Bailey">
+      <App />
+    </CollabProvider>
+  </React.StrictMode>
 );
