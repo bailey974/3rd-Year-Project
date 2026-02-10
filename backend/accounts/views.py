@@ -26,7 +26,7 @@ class RegisterSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         email = value.strip().lower()
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError("Email already in use.")
         return email
 
@@ -45,7 +45,7 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
 
 
-def _username_from_email(email: str) -> str:
+def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
@@ -62,7 +62,7 @@ def register_view(request):
         with transaction.atomic():
             # Username stays aligned with login identifier for simple auth.
             user = User.objects.create_user(
-                username=_username_from_email(email),
+                username=_normalize_email(email),
                 email=email,
                 password=password,
             )
@@ -83,7 +83,14 @@ def login_view(request):
     email = serializer.validated_data["email"].strip().lower()
     password = serializer.validated_data["password"]
 
-    user = authenticate(request, username=_username_from_email(email), password=password)
+    # Support both newer users (username=email) and legacy users where
+    # username may differ from email.
+    user = authenticate(request, username=_normalize_email(email), password=password)
+    if not user:
+        matched_user = User.objects.filter(email__iexact=email).first()
+        if matched_user:
+            user = authenticate(request, username=matched_user.username, password=password)
+
     if not user:
         return Response(
             {"message": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED
