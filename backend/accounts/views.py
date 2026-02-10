@@ -1,8 +1,11 @@
 from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
+from rest_framework import serializers, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
@@ -17,29 +20,56 @@ def tokens_for_user(user):
     }
 
 
+class RegisterSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_email(self, value):
+        email = value.strip().lower()
+        if User.objects.filter(email=email).exists():
+            raise serializers.ValidationError("Email already in use.")
+        return email
+
+    def validate_password(self, value):
+        if len(value) < 8:
+            raise serializers.ValidationError("Password must be at least 8 characters.")
+        try:
+            validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
+
+
+class LoginSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+
+def _username_from_email(email: str) -> str:
+    return email.strip().lower()
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def register_view(request):
-    email = (request.data.get("email") or "").strip().lower()
-    password = request.data.get("password") or ""
+    serializer = RegisterSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
 
-    if not email or not password:
-        return Response(
-            {"message": "Email and password required."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if len(password) < 8:
-        return Response(
-            {"message": "Password must be at least 8 characters."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if User.objects.filter(email=email).exists():
+    email = serializer.validated_data["email"]
+    password = serializer.validated_data["password"]
+
+    try:
+        with transaction.atomic():
+            # Username stays aligned with login identifier for simple auth.
+            user = User.objects.create_user(
+                username=_username_from_email(email),
+                email=email,
+                password=password,
+            )
+    except IntegrityError:
         return Response(
             {"message": "Email already in use."}, status=status.HTTP_400_BAD_REQUEST
         )
-
-    # Default Django User requires username; set it to email
-    user = User.objects.create_user(username=email, email=email, password=password)
 
     return Response(tokens_for_user(user), status=status.HTTP_201_CREATED)
 
@@ -47,11 +77,13 @@ def register_view(request):
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login_view(request):
-    email = (request.data.get("email") or "").strip().lower()
-    password = request.data.get("password") or ""
+    serializer = LoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
 
-    # We stored username=email at registration, so authenticate via username=email
-    user = authenticate(request, username=email, password=password)
+    email = serializer.validated_data["email"].strip().lower()
+    password = serializer.validated_data["password"]
+
+    user = authenticate(request, username=_username_from_email(email), password=password)
     if not user:
         return Response(
             {"message": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED
