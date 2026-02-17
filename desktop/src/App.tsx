@@ -16,10 +16,12 @@ import {
   useNavigate,
 } from "react-router-dom";
 
+import CollabSmokeTest from "./collab/collabSmokeTest";
 import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
 import FileExplorer from "./components/FileExplorer";
-import { useCollab } from "./collab/useCollab";
+import { CollabProvider } from "./collab/CollabProvider";
+
 
 /* =========================
    API (single source of truth)
@@ -207,7 +209,9 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 }
 
 function PrimaryButton(
-  props: React.ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    children: React.ReactNode;
+  }
 ) {
   const { children, ...rest } = props;
   return (
@@ -421,9 +425,6 @@ function cheapDirname(p: string | null | undefined) {
 function AppShell() {
   const { user, logout } = useAuth();
 
-  // Collab (never blocks UI)
-  const { ydoc, provider, status, err, wsUrl } = useCollab("main-room");
-
   const [showTerminal, setShowTerminal] = useState(true);
 
   const [activePath, setActivePath] = useState<string | undefined>();
@@ -447,12 +448,14 @@ function AppShell() {
       >
         <div style={{ fontWeight: 600 }}>Collaborative Code Editor</div>
 
-        <div style={{ fontSize: 12, opacity: 0.75 }}>
-          Collab: <b>{status}</b> — {wsUrl}
-          {err ? <span style={{ marginLeft: 10, color: "#b91c1c" }}>Error: {err}</span> : null}
-        </div>
-
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
           <div style={{ fontSize: 12, opacity: 0.75 }}>{user?.email}</div>
 
           <button
@@ -484,7 +487,14 @@ function AppShell() {
       </div>
 
       {/* Body */}
-      <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", minWidth: 0 }}>
+      <div
+        style={{
+          flex: "1 1 auto",
+          minHeight: 0,
+          display: "flex",
+          minWidth: 0,
+        }}
+      >
         <aside
           style={{
             width: 320,
@@ -504,14 +514,18 @@ function AppShell() {
           />
         </aside>
 
-        <main style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <main
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
           <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-            <CodeEditor
-              value={value}
-              onChange={setValue}
-              ydoc={ydoc}
-              awareness={provider?.awareness}
-            />
+            {/* CodeEditor uses useCollab() internally -> must be inside CollabProvider */}
+            <CodeEditor value={value} onChange={setValue} />
           </div>
 
           {showTerminal && (
@@ -526,7 +540,7 @@ function AppShell() {
 }
 
 /* =========================
-   App (Router + Provider)
+   App (Router + Provider + CollabProvider)
 ========================= */
 
 export default function App() {
@@ -541,7 +555,9 @@ export default function App() {
             path="/"
             element={
               <ProtectedRoute>
-                <AppShell />
+                <CollabProvider room="main-room">
+                  <AppShell />
+                </CollabProvider>
               </ProtectedRoute>
             }
           />
