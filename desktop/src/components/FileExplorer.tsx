@@ -1,260 +1,239 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { readDir } from "@tauri-apps/plugin-fs";
-import { join } from "@tauri-apps/api/path";
+// src/components/FileExplorer.tsx
+import React, { useEffect, useMemo, useState } from "react";
 
-type TreeNode = {
+type FsEntry = {
   name: string;
   path: string;
-  isDir: boolean;
+  type: "file" | "dir";
+  size?: number;
+  modified?: string;
 };
 
-function isUriPath(p: string) {
-  return p.startsWith("file://") || p.startsWith("content://");
-}
+type ListResponse = {
+  path: string;
+  entries: FsEntry[];
+};
 
-async function childPath(parent: string, name: string): Promise<string> {
-  // Desktop: parent is typically an absolute filesystem path -> use join()
-  if (!isUriPath(parent)) return join(parent, name);
+type ReadResponse = {
+  path: string;
+  content: string;
+};
 
-  // Mobile / URI format: resolve via URL
-  const base = parent.endsWith("/") ? parent : `${parent}/`;
-  return new URL(name, base).toString();
-}
+export type RequestJson = <T = any>(path: string, opts?: RequestInit) => Promise<T>;
 
-function sortNodes(nodes: TreeNode[]) {
-  return [...nodes].sort((a, b) => {
-    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-}
+type Props = {
+  requestJson: RequestJson;
 
-export default function FileExplorer(props: {
-  /** If provided, explorer shows this folder; otherwise user picks one */
-  rootDir?: string | null;
-  onRootDirChange?: (dir: string | null) => void;
+  // starting folder (server-dependent). Examples: "", "/", "C:\\Users\\..."
+  initialPath?: string;
 
-  /** Wire these to your editor / terminal / viewer */
-  onOpenFile?: (path: string) => void;
-  onOpenDir?: (path: string) => void;
-}) {
-  const { rootDir, onRootDirChange, onOpenFile, onOpenDir } = props;
+  // called when a file is opened
+  onOpenFile?: (filePath: string, content: string) => void;
 
-  const [internalRoot, setInternalRoot] = useState<string | null>(rootDir ?? null);
-  const effectiveRoot = rootDir ?? internalRoot;
+  // optional UI: highlight selected file
+  activePath?: string;
 
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [childrenByDir, setChildrenByDir] = useState<Record<string, TreeNode[]>>({});
-  const [loadingByDir, setLoadingByDir] = useState<Record<string, boolean>>({});
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  className?: string;
+};
 
-  // keep internal state in sync if parent controls rootDir
-  useEffect(() => {
-    if (rootDir !== undefined) setInternalRoot(rootDir);
-  }, [rootDir]);
+export default function FileExplorer({
+  requestJson,
+  initialPath = "",
+  onOpenFile,
+  activePath,
+  className,
+}: Props) {
+  const [cwd, setCwd] = useState(initialPath);
+  const [entries, setEntries] = useState<FsEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
 
-  const setRoot = useCallback(
-    (dir: string | null) => {
-      setInternalRoot(dir);
-      onRootDirChange?.(dir);
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return entries;
 
-      setChildrenByDir({});
-      setExpanded(dir ? { [dir]: true } : {});
-      setSelectedPath(null);
-      setError(null);
-    },
-    [onRootDirChange]
-  );
+    return entries.filter((e) => {
+      const hay = `${e.name} ${e.path}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [entries, filter]);
 
-  const loadDir = useCallback(async (dirPath: string) => {
+  async function refresh(path = cwd) {
+    setLoading(true);
+    setErr(null);
     try {
-      setLoadingByDir((p) => ({ ...p, [dirPath]: true }));
-      setError(null);
+      // Adjust this route to your backend
+      // Expected: { path, entries: [{name, path, type:'file'|'dir'}...] }
+      const data = await requestJson<ListResponse>(`/fs/list?path=${encodeURIComponent(path)}`);
 
-      const entries = await readDir(dirPath);
+      const sorted = [...(data.entries ?? [])].sort((a, b) => {
+        if (a.type !== b.type) return a.type === "dir" ? -1 : 1; // dirs first
+        return a.name.localeCompare(b.name);
+      });
 
-      const nodes: TreeNode[] = await Promise.all(
-        entries.map(async (e) => ({
-          name: e.name ?? "(unknown)",
-          isDir: !!e.isDirectory,
-          path: await childPath(dirPath, e.name ?? ""),
-        }))
-      );
-
-      setChildrenByDir((p) => ({ ...p, [dirPath]: sortNodes(nodes) }));
+      setCwd(data.path ?? path);
+      setEntries(sorted);
     } catch (e: any) {
-      setError(e?.message ?? String(e));
+      setErr(e?.message ?? "Failed to load directory.");
     } finally {
-      setLoadingByDir((p) => ({ ...p, [dirPath]: false }));
+      setLoading(false);
     }
+  }
+
+  async function openEntry(e: FsEntry) {
+    if (e.type === "dir") {
+      await refresh(e.path);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setErr(null);
+
+      // Adjust this route to your backend
+      // Expected: { path, content }
+      const data = await requestJson<ReadResponse>(`/fs/read?path=${encodeURIComponent(e.path)}`);
+
+      onOpenFile?.(data.path ?? e.path, data.content ?? "");
+    } catch (ex: any) {
+      setErr(ex?.message ?? "Failed to open file.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function goUp() {
+    // Works for both "/" and "C:\..." style paths
+    const p = cwd.replace(/[\\\/]+$/, "");
+    if (!p) return;
+
+    const sep = p.includes("\\") ? "\\" : "/";
+    const idx = p.lastIndexOf(sep);
+    if (idx <= 0) {
+      // back to root-ish
+      refresh(sep);
+      return;
+    }
+    refresh(p.slice(0, idx));
+  }
+
+  useEffect(() => {
+    refresh(initialPath);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // initial load
-  useEffect(() => {
-    if (!effectiveRoot) return;
-    loadDir(effectiveRoot);
-    setExpanded((p) => ({ ...p, [effectiveRoot]: true }));
-  }, [effectiveRoot, loadDir]);
-
-  const pickFolder = useCallback(async () => {
-    const selected = await open({ directory: true, multiple: false });
-    if (!selected || Array.isArray(selected)) return;
-
-    setRoot(selected);
-  }, [setRoot]);
-
-  const toggleDir = useCallback(
-    async (dirPath: string) => {
-      setExpanded((p) => ({ ...p, [dirPath]: !p[dirPath] }));
-
-      // lazy-load on first expand
-      const alreadyLoaded = childrenByDir[dirPath] !== undefined;
-      const willExpand = !expanded[dirPath];
-      if (willExpand && !alreadyLoaded) {
-        await loadDir(dirPath);
-      }
-    },
-    [childrenByDir, expanded, loadDir]
-  );
-
-  const refresh = useCallback(async () => {
-    if (!effectiveRoot) return;
-
-    // reload all currently-expanded directories (cheap for small trees; easy + predictable)
-    const expandedDirs = Object.entries(expanded)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-
-    // ensure root is always included
-    const dirs = Array.from(new Set([effectiveRoot, ...expandedDirs]));
-    for (const d of dirs) {
-      await loadDir(d);
-    }
-  }, [effectiveRoot, expanded, loadDir]);
-
-  const renderNode = useCallback(
-    (node: TreeNode, depth: number) => {
-      const isExpanded = !!expanded[node.path];
-      const children = childrenByDir[node.path];
-      const isLoading = !!loadingByDir[node.path];
-
-      return (
-        <div key={node.path}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 8px",
-              paddingLeft: 8 + depth * 14,
-              cursor: "pointer",
-              userSelect: "none",
-              background: selectedPath === node.path ? "rgba(255,255,255,0.08)" : "transparent",
-            }}
-            onClick={() => {
-              setSelectedPath(node.path);
-              if (node.isDir) onOpenDir?.(node.path);
-              else onOpenFile?.(node.path);
-            }}
-            onDoubleClick={() => {
-              if (node.isDir) toggleDir(node.path);
-              else onOpenFile?.(node.path);
-            }}
-            title={node.path}
-          >
-            {node.isDir ? (
-              <span
-                style={{ width: 14, display: "inline-block" }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleDir(node.path);
-                }}
-              >
-                {isExpanded ? "▾" : "▸"}
-              </span>
-            ) : (
-              <span style={{ width: 14, display: "inline-block" }} />
-            )}
-
-            <span style={{ opacity: node.isDir ? 1 : 0.9 }}>{node.name}</span>
-          </div>
-
-          {node.isDir && isExpanded && (
-            <div>
-              {isLoading && (
-                <div style={{ paddingLeft: 8 + (depth + 1) * 14, paddingTop: 2, opacity: 0.75 }}>
-                  Loading…
-                </div>
-              )}
-              {children?.map((c) => renderNode(c, depth + 1))}
-            </div>
-          )}
-        </div>
-      );
-    },
-    [childrenByDir, expanded, loadingByDir, onOpenDir, onOpenFile, selectedPath, toggleDir]
-  );
-
-  const rootChildren = useMemo(() => {
-    if (!effectiveRoot) return [];
-    return childrenByDir[effectiveRoot] ?? [];
-  }, [childrenByDir, effectiveRoot]);
-
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", minWidth: 0 }}>
-      <div
-        style={{
-          padding: "10px 10px 8px",
-          borderBottom: "1px solid rgba(255,255,255,0.08)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-        }}
-      >
-        <div style={{ fontWeight: 600 }}>Explorer</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={pickFolder} style={{ padding: "4px 8px" }}>
-            Open Folder
-          </button>
-          <button onClick={refresh} style={{ padding: "4px 8px" }} disabled={!effectiveRoot}>
-            Refresh
-          </button>
+    <div
+      className={className}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        borderRight: "1px solid rgba(255,255,255,0.08)",
+        minWidth: 260,
+        width: 320,
+        height: "100%",
+      }}
+    >
+      {/* Header / Toolbar */}
+      <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          Files
         </div>
+
+        <button onClick={goUp} disabled={loading} style={btnStyle}>
+          Up
+        </button>
+        <button onClick={() => refresh()} disabled={loading} style={btnStyle}>
+          Refresh
+        </button>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto" }}>
-        {!effectiveRoot ? (
-          <div style={{ padding: 10, opacity: 0.85 }}>
-            No folder selected. Click <b>Open Folder</b>.
-          </div>
-        ) : (
-          <div>
-            {rootChildren.map((n) => renderNode(n, 0))}
-            {error && (
-              <div style={{ padding: 10, color: "salmon", whiteSpace: "pre-wrap" }}>
-                {error}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
+      {/* Current path */}
       <div
+        title={cwd}
         style={{
-          padding: "8px 10px",
-          borderTop: "1px solid rgba(255,255,255,0.08)",
+          padding: "0 10px 10px 10px",
           fontSize: 12,
-          opacity: 0.8,
-          whiteSpace: "nowrap",
+          opacity: 0.75,
           overflow: "hidden",
           textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
         }}
-        title={effectiveRoot ?? ""}
       >
-        {effectiveRoot ? effectiveRoot : "—"}
+        {cwd || "(root)"}
+      </div>
+
+      {/* Filter */}
+      <div style={{ padding: "0 10px 10px 10px" }}>
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter files..."
+          style={{
+            width: "100%",
+            padding: "8px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "transparent",
+            color: "inherit",
+            outline: "none",
+          }}
+        />
+      </div>
+
+      {/* Errors */}
+      {err && (
+        <div style={{ padding: "0 10px 10px 10px", color: "#ff7b7b", fontSize: 12 }}>
+          {err}
+        </div>
+      )}
+
+      {/* List */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        {loading && entries.length === 0 ? (
+          <div style={{ padding: 10, opacity: 0.75 }}>Loading…</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: 10, opacity: 0.75 }}>No files.</div>
+        ) : (
+          filtered.map((e) => {
+            const isActive = !!activePath && activePath === e.path;
+
+            return (
+              <div
+                key={e.path}
+                onDoubleClick={() => openEntry(e)}
+                onClick={() => e.type === "file" && openEntry(e)}
+                title={e.path}
+                style={{
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
+                }}
+              >
+                <span style={{ width: 16, textAlign: "center", opacity: 0.9 }}>
+                  {e.type === "dir" ? "📁" : "📄"}
+                </span>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {e.name}
+                </span>
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
 }
+
+const btnStyle: React.CSSProperties = {
+  padding: "6px 10px",
+  borderRadius: 8,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "transparent",
+  color: "inherit",
+  cursor: "pointer",
+};

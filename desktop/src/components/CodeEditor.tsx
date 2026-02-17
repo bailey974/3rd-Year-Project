@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
+import type * as monaco from "monaco-editor";
 import { readTextFile } from "@tauri-apps/plugin-fs";
+import { MonacoBinding } from "y-monaco";
+
+import { useCollab } from "../collab/CollabProvider";
+import { getOrCreateYText, normalizePath } from "../collab/yFiles";
 
 type Props = {
   filePath?: string | null;
@@ -13,11 +18,9 @@ function inferLanguage(filePath?: string | null): string {
   const ext = lower.split(".").pop() ?? "";
   switch (ext) {
     case "ts":
-      return "typescript";
     case "tsx":
       return "typescript";
     case "js":
-      return "javascript";
     case "jsx":
       return "javascript";
     case "json":
@@ -49,22 +52,37 @@ function inferLanguage(filePath?: string | null): string {
 }
 
 export default function CodeEditor({ filePath }: Props) {
-  const [value, setValue] = useState<string>("");
+  const { doc, awareness } = useCollab();
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   // Guard against out-of-order async loads when switching files quickly
   const loadSeq = useRef(0);
 
+  // Monaco refs
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const bindingRef = useRef<MonacoBinding | null>(null);
+
   const language = useMemo(() => inferLanguage(filePath), [filePath]);
 
+  // 1) Seed the shared Y.Text from disk (ONLY if it’s empty)
   useEffect(() => {
     const seq = ++loadSeq.current;
 
-    async function load() {
+    async function seedFromDisk() {
       if (!filePath) {
-        setValue("");
         setErr(null);
+        setLoading(false);
+        return;
+      }
+
+      const yText = getOrCreateYText(doc, filePath);
+
+      // If room already has content, do NOT overwrite it with local disk.
+      if (yText.length > 0) {
+        setErr(null);
+        setLoading(false);
         return;
       }
 
@@ -73,19 +91,59 @@ export default function CodeEditor({ filePath }: Props) {
 
       try {
         const text = await readTextFile(filePath);
-        if (loadSeq.current === seq) setValue(text);
+
+        // file switched while loading
+        if (loadSeq.current !== seq) return;
+
+        // still empty? then seed
+        if (yText.length === 0) {
+          doc.transact(() => {
+            yText.insert(0, text);
+          });
+        }
       } catch (e: any) {
         if (loadSeq.current === seq) {
+          // It's fine to still allow editing; we just show the error.
           setErr(e?.message ?? String(e));
-          setValue("");
         }
       } finally {
         if (loadSeq.current === seq) setLoading(false);
       }
     }
 
-    load();
-  }, [filePath]);
+    seedFromDisk();
+  }, [doc, filePath]);
+
+  // 2) Bind Monaco model <-> Y.Text whenever file or editor changes
+  useEffect(() => {
+    const editor = editorRef.current;
+
+    // cleanup any prior binding
+    bindingRef.current?.destroy();
+    bindingRef.current = null;
+
+    if (!editor || !filePath) return;
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    // presence: show what file I'm on
+    (awareness as any).setLocalStateField("activeFile", normalizePath(filePath));
+
+    const yText = getOrCreateYText(doc, filePath);
+
+    bindingRef.current = new MonacoBinding(
+      yText,
+      model,
+      new Set([editor]),
+      awareness
+    );
+
+    return () => {
+      bindingRef.current?.destroy();
+      bindingRef.current = null;
+    };
+  }, [doc, awareness, filePath]);
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -114,7 +172,17 @@ export default function CodeEditor({ filePath }: Props) {
 
         {loading && <div style={{ fontSize: 12, color: "#6b7280" }}>Loading…</div>}
         {err && (
-          <div style={{ fontSize: 12, color: "crimson", maxWidth: 520, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={err}>
+          <div
+            style={{
+              fontSize: 12,
+              color: "crimson",
+              maxWidth: 520,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={err}
+          >
             {err}
           </div>
         )}
@@ -125,9 +193,10 @@ export default function CodeEditor({ filePath }: Props) {
           // This helps Monaco keep distinct models per file
           path={filePath ?? "inmemory://model"}
           language={language}
-          value={value}
-          onChange={(v) => setValue(v ?? "")}
-          theme="vs" // switch to "vs-dark" if you prefer
+          theme="vs"
+          onMount={(editor) => {
+            editorRef.current = editor;
+          }}
           options={{
             automaticLayout: true,
             minimap: { enabled: false },

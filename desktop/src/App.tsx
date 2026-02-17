@@ -16,14 +16,15 @@ import {
   useNavigate,
 } from "react-router-dom";
 
-import { dirname } from "@tauri-apps/api/path";
+import CollabSmokeTest from "./collab/collabSmokeTest";
+import CodeEditor from "./components/CodeEditor";
+import TerminalPanel from "./components/TerminalPanel";
+import FileExplorer from "./components/FileExplorer";
+import { CollabProvider } from "./collab/CollabProvider";
 
-import CodeEditor from "../src/components/CodeEditor";
-import TerminalPanel from "../src/components/TerminalPanel";
-import FileExplorer from "../src/components/FileExplorer";
 
 /* =========================
-   API (adjust base/endpoints if needed)
+   API (single source of truth)
 ========================= */
 
 const API_BASE =
@@ -43,7 +44,6 @@ async function requestJson<T>(
 ): Promise<T> {
   const headers = new Headers(opts.headers);
 
-  // Only set JSON content-type if not sending FormData
   if (!headers.has("Content-Type") && !(opts.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
@@ -110,7 +110,6 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Bootstrap /me if token exists
   useEffect(() => {
     let cancelled = false;
 
@@ -124,7 +123,6 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!cancelled) setUser(null);
         }
       } catch {
-        // token invalid/expired
         localStorage.removeItem(TOKEN_KEY);
         if (!cancelled) {
           setToken(null);
@@ -193,12 +191,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 /* =========================
-   Pages
+   UI bits
 ========================= */
 
-function Input({
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
@@ -212,25 +208,31 @@ function Input({
   );
 }
 
-function PrimaryButton({
-  children,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+function PrimaryButton(
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    children: React.ReactNode;
+  }
+) {
+  const { children, ...rest } = props;
   return (
     <button
-      {...props}
+      {...rest}
       style={{
         padding: "10px 12px",
         border: "1px solid #d1d5db",
         borderRadius: 8,
         background: "#fff",
-        cursor: props.disabled ? "not-allowed" : "pointer",
+        cursor: rest.disabled ? "not-allowed" : "pointer",
       }}
     >
       {children}
     </button>
   );
 }
+
+/* =========================
+   Pages
+========================= */
 
 function LoginPage() {
   const { login } = useAuth();
@@ -270,9 +272,7 @@ function LoginPage() {
     >
       <h1 style={{ margin: 0, marginBottom: 16 }}>Login</h1>
 
-      {err && (
-        <div style={{ marginBottom: 12, color: "#b91c1c" }}>{err}</div>
-      )}
+      {err && <div style={{ marginBottom: 12, color: "#b91c1c" }}>{err}</div>}
 
       <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
         <label style={{ display: "grid", gap: 6 }}>
@@ -357,9 +357,7 @@ function RegisterPage() {
     >
       <h1 style={{ margin: 0, marginBottom: 16 }}>Create account</h1>
 
-      {err && (
-        <div style={{ marginBottom: 12, color: "#b91c1c" }}>{err}</div>
-      )}
+      {err && <div style={{ marginBottom: 12, color: "#b91c1c" }}>{err}</div>}
 
       <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
         <label style={{ display: "grid", gap: 6 }}>
@@ -408,15 +406,31 @@ function RegisterPage() {
 }
 
 /* =========================
-   Your original app UI (protected)
+   Helpers
+========================= */
+
+function cheapDirname(p: string | null | undefined) {
+  if (!p) return null;
+  const s = p.replace(/[\\/]+$/, "");
+  const sep = s.includes("\\") ? "\\" : "/";
+  const i = s.lastIndexOf(sep);
+  if (i <= 0) return sep;
+  return s.slice(0, i);
+}
+
+/* =========================
+   Main protected app UI
 ========================= */
 
 function AppShell() {
   const { user, logout } = useAuth();
 
   const [showTerminal, setShowTerminal] = useState(true);
-  const [cwd, setCwd] = useState<string | null>(null);
-  const [activeFile, setActiveFile] = useState<string | null>(null);
+
+  const [activePath, setActivePath] = useState<string | undefined>();
+  const [value, setValue] = useState("");
+
+  const cwd = cheapDirname(activePath ?? null);
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -472,31 +486,30 @@ function AppShell() {
         </div>
       </div>
 
-      {/* Body: Explorer + Editor/Terminal */}
-      <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", minWidth: 0 }}>
+      {/* Body */}
+      <div
+        style={{
+          flex: "1 1 auto",
+          minHeight: 0,
+          display: "flex",
+          minWidth: 0,
+        }}
+      >
         <aside
           style={{
-            width: 300,
+            width: 320,
             minWidth: 240,
-            maxWidth: 420,
+            maxWidth: 520,
             borderRight: "1px solid #e5e7eb",
             overflow: "hidden",
           }}
         >
           <FileExplorer
-            rootDir={cwd}
-            onRootDirChange={(dir) => setCwd(dir)}
-            onOpenDir={(dir) => setCwd(dir)}
-            onOpenFile={async (path) => {
-              setActiveFile(path);
-
-              // Optional: keep terminal cwd aligned to the file’s folder
-              try {
-                const d = await dirname(path);
-                setCwd(d);
-              } catch {
-                // ignore
-              }
+            requestJson={requestJson}
+            activePath={activePath}
+            onOpenFile={(path: string, content: string) => {
+              setActivePath(path);
+              setValue(content);
             }}
           />
         </aside>
@@ -508,15 +521,13 @@ function AppShell() {
             minHeight: 0,
             display: "flex",
             flexDirection: "column",
-            overflow: "hidden",
           }}
         >
-          {/* Editor area */}
           <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-            <CodeEditor filePath={activeFile} />
+            {/* CodeEditor uses useCollab() internally -> must be inside CollabProvider */}
+            <CodeEditor value={value} onChange={setValue} />
           </div>
 
-          {/* Terminal dock */}
           {showTerminal && (
             <div style={{ height: 240, borderTop: "1px solid #e5e7eb" }}>
               <TerminalPanel cwd={cwd ?? undefined} />
@@ -529,7 +540,7 @@ function AppShell() {
 }
 
 /* =========================
-   App (Router + Provider)
+   App (Router + Provider + CollabProvider)
 ========================= */
 
 export default function App() {
@@ -544,7 +555,9 @@ export default function App() {
             path="/"
             element={
               <ProtectedRoute>
-                <AppShell />
+                <CollabProvider room="main-room">
+                  <AppShell />
+                </CollabProvider>
               </ProtectedRoute>
             }
           />
