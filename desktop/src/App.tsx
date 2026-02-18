@@ -20,6 +20,7 @@ import CollabSmokeTest from "./collab/collabSmokeTest";
 import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
 import FileExplorer from "./components/FileExplorer";
+import ChatPanel from "./components/ChatPanel";
 import { CollabProvider } from "./collab/CollabProvider";
 
 
@@ -426,6 +427,7 @@ function AppShell() {
   const { user, logout } = useAuth();
 
   const [showTerminal, setShowTerminal] = useState(true);
+  const [showChat, setShowChat] = useState(true);
 
   const [activePath, setActivePath] = useState<string | undefined>();
   const [value, setValue] = useState("");
@@ -469,6 +471,19 @@ function AppShell() {
             }}
           >
             {showTerminal ? "Hide Terminal" : "Show Terminal"}
+          </button>
+
+          <button
+            onClick={() => setShowChat((v) => !v)}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            {showChat ? "Hide Chat" : "Show Chat"}
           </button>
 
           <button
@@ -520,17 +535,39 @@ function AppShell() {
             minWidth: 0,
             minHeight: 0,
             display: "flex",
-            flexDirection: "column",
+            flexDirection: "row",
           }}
         >
-          <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-            {/* CodeEditor uses useCollab() internally -> must be inside CollabProvider */}
-            <CodeEditor value={value} onChange={setValue} />
+          <div
+            style={{
+              flex: "1 1 auto",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+              {/* CodeEditor uses useCollab() internally -> must be inside CollabProvider */}
+              <CodeEditor value={value} onChange={setValue} />
+            </div>
+
+            {showTerminal && (
+              <div style={{ height: 240, borderTop: "1px solid #e5e7eb" }}>
+                <TerminalPanel cwd={cwd ?? undefined} />
+              </div>
+            )}
           </div>
 
-          {showTerminal && (
-            <div style={{ height: 240, borderTop: "1px solid #e5e7eb" }}>
-              <TerminalPanel cwd={cwd ?? undefined} />
+          {showChat && (
+            <div
+              style={{
+                width: 300,
+                borderLeft: "1px solid #e5e7eb",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <ChatPanel />
             </div>
           )}
         </main>
@@ -542,6 +579,18 @@ function AppShell() {
 /* =========================
    App (Router + Provider + CollabProvider)
 ========================= */
+
+function CollabWrapper() {
+  const { user } = useAuth();
+  return (
+    <CollabProvider
+      defaultRoomId="main-room"
+      displayName={user?.email?.split('@')[0] ?? "Guest"}
+    >
+      <AppShell />
+    </CollabProvider>
+  );
+}
 
 export default function App() {
   return (
@@ -555,9 +604,7 @@ export default function App() {
             path="/"
             element={
               <ProtectedRoute>
-                <CollabProvider room="main-room">
-                  <AppShell />
-                </CollabProvider>
+                <CollabWrapper />
               </ProtectedRoute>
             }
           />

@@ -73,6 +73,26 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
 
+    // Context menu & Clipboard support
+    // 1. Selection + Ctrl+C -> Copy (intercepts SIGINT)
+    // 2. Selection + Right Click -> Copy (optional, standard behavior handling)
+
+    term.attachCustomKeyEventHandler((arg) => {
+      // ctrl+c
+      if (arg.ctrlKey && arg.code === "KeyC" && arg.type === "keydown") {
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection);
+          return false; // Do not send SIGINT
+        }
+      }
+      // ctrl+v -> allow default paste or handle manually?
+      if (arg.ctrlKey && arg.code === "KeyV" && arg.type === "keydown") {
+        return true;
+      }
+      return true;
+    });
+
     term.open(container);
 
     // Delay first fit until layout has happened
@@ -95,7 +115,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
       const id = termIdRef.current;
       if (!id) return;
       fit.fit();
-      invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
+      invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => { });
     });
     ro.observe(container);
 
@@ -103,6 +123,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
     let unlistenExit: null | (() => void) = null;
 
     let disposeOnData: null | (() => void) = null;
+    let removeContextMenu: null | (() => void) = null;
 
     (async () => {
       // 1) Start listening BEFORE creating the PTY (prevents missing the first prompt)
@@ -141,6 +162,21 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
 
       termIdRef.current = id;
 
+      // Update the context menu handler to use the active ID
+      const onContextMenu = async (e: MouseEvent) => {
+        e.preventDefault();
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            invoke("terminal_write", { id: termIdRef.current, data: text }).catch(() => { });
+          }
+        } catch (err) {
+          console.error("Failed to read clipboard", err);
+        }
+      };
+      container.addEventListener("contextmenu", onContextMenu);
+      removeContextMenu = () => container.removeEventListener("contextmenu", onContextMenu);
+
       // 3) Flush any buffered output (including the first prompt)
       const buffered = pendingByIdRef.current[id];
       if (buffered) {
@@ -156,16 +192,16 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
 
       // 4) Wire input AFTER id is set
       const d = term.onData((data) => {
-        invoke("terminal_write", { id, data }).catch(() => {});
+        invoke("terminal_write", { id, data }).catch(() => { });
       });
       disposeOnData = () => d.dispose();
 
       // 5) Force a prompt in case the first one was missed
-      await invoke("terminal_write", { id, data: "\r" }).catch(() => {});
+      await invoke("terminal_write", { id, data: "\r" }).catch(() => { });
 
       // 6) Sync size once more
       fit.fit();
-      await invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
+      await invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => { });
 
       term.writeln("\r\n[terminal ready]");
       setReady(true);
@@ -180,13 +216,15 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
       ro.disconnect();
 
       if (disposeOnData) disposeOnData();
+      if (removeContextMenu) removeContextMenu();
 
+      // These are functions returned by `listen`, they should be called directly
       if (unlistenData) unlistenData();
       if (unlistenExit) unlistenExit();
 
       const id = termIdRef.current;
       termIdRef.current = null;
-      if (id) invoke("terminal_kill", { id }).catch(() => {});
+      if (id) invoke("terminal_kill", { id }).catch(() => { });
 
       term.dispose();
       setReady(false);
