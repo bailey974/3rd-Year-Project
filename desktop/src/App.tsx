@@ -20,10 +20,10 @@ import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
 import FileExplorer from "./components/FileExplorer";
 import ChatPanel from "./components/ChatPanel";
-import { CollabProvider } from "./collab/CollabProvider";
+import { CollabProvider, useCollab } from "./collab/CollabProvider";
 
 /* =========================
-   API (single source of truth)
+   API
 ========================= */
 
 const API_BASE =
@@ -65,7 +65,9 @@ async function requestJson<T>(
     throw new Error(msg);
   }
 
-  return (await res.json()) as T;
+  // allow empty bodies
+  const text = await res.text();
+  return (text ? JSON.parse(text) : {}) as T;
 }
 
 const api = {
@@ -301,10 +303,6 @@ function LoginPage() {
       <div style={{ marginTop: 14 }}>
         No account? <Link to="/register">Create one</Link>
       </div>
-
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-        API base: {API_BASE}
-      </div>
     </div>
   );
 }
@@ -396,10 +394,6 @@ function RegisterPage() {
       <div style={{ marginTop: 14 }}>
         Already have an account? <Link to="/login">Login</Link>
       </div>
-
-      <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-        API base: {API_BASE}
-      </div>
     </div>
   );
 }
@@ -418,26 +412,305 @@ function cheapDirname(p: string | null | undefined) {
 }
 
 /* =========================
+   Room system (simple, client-side)
+========================= */
+
+type RoomMeta = {
+  docName: string; // used as roomId for y-websocket
+  name: string;
+  joinCode: string;
+  maxUsers: number;
+};
+
+const ROOM_KEY = "collab_room_meta";
+
+function loadRoomMeta(): RoomMeta | null {
+  try {
+    const raw = localStorage.getItem(ROOM_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.docName) return null;
+    return parsed as RoomMeta;
+  } catch {
+    return null;
+  }
+}
+
+function saveRoomMeta(meta: RoomMeta | null) {
+  if (!meta) localStorage.removeItem(ROOM_KEY);
+  else localStorage.setItem(ROOM_KEY, JSON.stringify(meta));
+}
+
+function randomJoinCode(len = 8) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
+function RoomBar({
+  onOpenRoomDialog,
+}: {
+  onOpenRoomDialog: () => void;
+}) {
+  const { roomId, status, awareness } = useCollab();
+  const [count, setCount] = useState<number>(1);
+
+  useEffect(() => {
+    const aw: any = awareness as any;
+    const update = () => {
+      try {
+        setCount(awareness.getStates().size);
+      } catch {
+        setCount(1);
+      }
+    };
+    update();
+    aw?.on?.("change", update);
+    return () => aw?.off?.("change", update);
+  }, [awareness]);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <button
+        onClick={onOpenRoomDialog}
+        style={{
+          padding: "6px 10px",
+          border: "1px solid #d1d5db",
+          borderRadius: 6,
+          background: "#fff",
+          cursor: "pointer",
+        }}
+      >
+        Rooms
+      </button>
+
+      <div style={{ fontSize: 12, opacity: 0.85 }}>
+        <b>{roomId}</b> • {status} • {count}/10
+      </div>
+    </div>
+  );
+}
+
+function RoomDialog({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { setRoomId } = useCollab();
+
+  const [tab, setTab] = useState<"create" | "join">("create");
+  const [roomName, setRoomName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setTab("create");
+    setRoomName("");
+    setJoinCode("");
+    setErr(null);
+  }, [open]);
+
+  if (!open) return null;
+
+  const createRoom = () => {
+    const name = roomName.trim();
+    if (name.length < 2) {
+      setErr("Room name must be at least 2 characters.");
+      return;
+    }
+
+    const code = randomJoinCode(8);
+    const meta: RoomMeta = { docName: code, name, joinCode: code, maxUsers: 10 };
+    saveRoomMeta(meta);
+
+    setRoomId(code);
+    onClose();
+  };
+
+  const joinRoom = () => {
+    const code = joinCode.trim().toUpperCase();
+    if (code.length < 4) {
+      setErr("Enter a valid join code.");
+      return;
+    }
+
+    const meta: RoomMeta = { docName: code, name: code, joinCode: code, maxUsers: 10 };
+    saveRoomMeta(meta);
+
+    setRoomId(code);
+    onClose();
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 9999,
+      }}
+      onMouseDown={onClose}
+    >
+      <div
+        style={{
+          width: 480,
+          maxWidth: "92vw",
+          background: "#fff",
+          borderRadius: 12,
+          padding: 14,
+          border: "1px solid #e5e7eb",
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontWeight: 700 }}>Rooms</div>
+          <div style={{ marginLeft: "auto" }}>
+            <button
+              onClick={onClose}
+              style={{
+                padding: "6px 10px",
+                border: "1px solid #d1d5db",
+                borderRadius: 6,
+                background: "#fff",
+                cursor: "pointer",
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button
+            onClick={() => setTab("create")}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: tab === "create" ? "#f3f4f6" : "#fff",
+              cursor: "pointer",
+            }}
+          >
+            Create
+          </button>
+          <button
+            onClick={() => setTab("join")}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: tab === "join" ? "#f3f4f6" : "#fff",
+              cursor: "pointer",
+            }}
+          >
+            Join
+          </button>
+        </div>
+
+        {err && (
+          <div style={{ marginTop: 10, color: "crimson", fontSize: 12 }}>
+            {err}
+          </div>
+        )}
+
+        {tab === "create" ? (
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Room name</span>
+              <input
+                value={roomName}
+                onChange={(e) => setRoomName(e.target.value)}
+                placeholder="e.g. Team Alpha"
+                style={{
+                  padding: "8px 10px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: 8,
+                  outline: "none",
+                }}
+              />
+            </label>
+
+            <button
+              onClick={createRoom}
+              style={{
+                border: "1px solid #111827",
+                borderRadius: 8,
+                background: "#111827",
+                color: "#fff",
+                padding: "8px 10px",
+                cursor: "pointer",
+              }}
+            >
+              Create room (max 10)
+            </button>
+          </div>
+        ) : (
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            <label style={{ display: "grid", gap: 6 }}>
+              <span style={{ fontSize: 12, opacity: 0.75 }}>Join code</span>
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value)}
+                placeholder="e.g. K7P9Q2XA"
+                style={{
+                  padding: "8px 10px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: 8,
+                  outline: "none",
+                }}
+              />
+            </label>
+
+            <button
+              onClick={joinRoom}
+              style={{
+                border: "1px solid #111827",
+                borderRadius: 8,
+                background: "#111827",
+                color: "#fff",
+                padding: "8px 10px",
+                cursor: "pointer",
+              }}
+            >
+              Join room
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =========================
    Main protected app UI
 ========================= */
 
 function AppShell() {
-  const { user, token, logout } = useAuth();
+  const { user, logout, token } = useAuth();
 
   const [showTerminal, setShowTerminal] = useState(true);
   const [showChat, setShowChat] = useState(true);
 
-  // This is the ONLY state you need for “click file -> open in editor”.
-  const [activePath, setActivePath] = useState<string | null>(null);
+  // ✅ these are the only states we need for file opening
+  const [activePath, setActivePath] = useState<string | undefined>();
+  const [activeContent, setActiveContent] = useState<string>("");
 
-  // If your /fs/* endpoints are protected, FileExplorer needs the token.
+  const cwd = cheapDirname(activePath ?? null);
+
+  // Auth wrapper for FileExplorer calls
   const authedRequestJson = useMemo(() => {
-    return async function <T>(path: string, opts: RequestInit = {}) {
-      return requestJson<T>(path, { ...opts, token });
-    };
+    return <T,>(path: string, opts: RequestInit = {}) =>
+      requestJson<T>(path, { ...opts, token });
   }, [token]);
 
-  const cwd = cheapDirname(activePath);
+  const [roomDialogOpen, setRoomDialogOpen] = useState(false);
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -454,6 +727,8 @@ function AppShell() {
         }}
       >
         <div style={{ fontWeight: 600 }}>Collaborative Code Editor</div>
+
+        <RoomBar onOpenRoomDialog={() => setRoomDialogOpen(true)} />
 
         <div
           style={{
@@ -526,11 +801,13 @@ function AppShell() {
         >
           <FileExplorer
             requestJson={authedRequestJson}
-            activePath={activePath ?? undefined}
-            // IMPORTANT: this is what makes “select file -> open in editor” work
-            onFileSelect={(path) => setActivePath(path)}
-            // Keep this too (harmless) so it still works if you depend on read-before-open
-            onOpenFile={(path) => setActivePath(path)}
+            activePath={activePath}
+            onOpenFile={(path: string, content: string) => {
+              // ✅ critical: CodeEditor must receive the new filePath
+              setActivePath(path);
+              // ✅ also pass initial content so editor can seed Yjs without local FS permissions
+              setActiveContent(content ?? "");
+            }}
           />
         </aside>
 
@@ -552,8 +829,10 @@ function AppShell() {
             }}
           >
             <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-              {/* CodeEditor uses useCollab() internally -> must be inside CollabProvider */}
-              <CodeEditor filePath={activePath} />
+              <CodeEditor
+                filePath={activePath ?? null}
+                initialContent={activeContent}
+              />
             </div>
 
             {showTerminal && (
@@ -577,6 +856,8 @@ function AppShell() {
           )}
         </main>
       </div>
+
+      <RoomDialog open={roomDialogOpen} onClose={() => setRoomDialogOpen(false)} />
     </div>
   );
 }
@@ -587,9 +868,11 @@ function AppShell() {
 
 function CollabWrapper() {
   const { user } = useAuth();
+  const meta = loadRoomMeta();
+
   return (
     <CollabProvider
-      defaultRoomId="main-room"
+      defaultRoomId={meta?.docName ?? "main-room"}
       displayName={user?.email?.split("@")[0] ?? "Guest"}
     >
       <AppShell />

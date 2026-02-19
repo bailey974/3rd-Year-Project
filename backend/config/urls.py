@@ -7,4 +7,6 @@ urlpatterns = [
     path("api/auth/", include("accounts.urls")),
     path("fs/list", fs_list),
     path("fs/read", fs_read),
+    path("api/rooms/", include("rooms.urls")),
+
 ]
