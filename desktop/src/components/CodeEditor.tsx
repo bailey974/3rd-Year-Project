@@ -9,7 +9,7 @@ import { getOrCreateYText, normalizePath } from "../collab/yFiles";
 type Props = {
   filePath?: string | null;
 
-  // ✅ content coming from your backend (/fs/read)
+  // content coming from your backend (/fs/read)
   // used to seed shared Y.Text when it's empty, so you do NOT rely on Tauri local FS permissions.
   initialContent?: string;
 };
@@ -69,8 +69,24 @@ function toMonacoUri(monacoApi: typeof monaco, filePath: string) {
   return monacoApi.Uri.parse(`file:///${encodeURI(norm)}`);
 }
 
+function accessMessage(reason: string) {
+  switch (reason) {
+    case "tree_not_shared":
+      return "Host has not shared the file tree.";
+    case "outside_shared_roots":
+      return "This file is outside the shared roots.";
+    case "hidden":
+      return "This file is hidden by the host.";
+    case "excluded":
+      return "This file is excluded by the host (cannot be opened).";
+    default:
+      return "Access denied.";
+  }
+}
+
 export default function CodeEditor({ filePath, initialContent }: Props) {
-  const { doc, awareness } = useCollab();
+  const { doc, awareness, canViewDoc, canEditDoc, effectiveDocLevel, getPathAccess, requestEdit, role, isHost } =
+    useCollab();
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -86,7 +102,17 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
 
   const language = useMemo(() => inferLanguage(filePath), [filePath]);
 
-  // ✅ ensure the editor is ALWAYS showing the correct model for the clicked file
+  const canView = useMemo(() => (filePath ? canViewDoc(filePath) : true), [filePath, canViewDoc]);
+  const canEdit = useMemo(() => (filePath ? canEditDoc(filePath) : false), [filePath, canEditDoc]);
+  const level = useMemo(() => (filePath ? effectiveDocLevel(filePath) : "none"), [filePath, effectiveDocLevel]);
+
+  const accessReason = useMemo(() => {
+    if (!filePath) return null;
+    const acc = getPathAccess(filePath, { asGuest: !isHost });
+    return acc.ok ? null : acc.reason;
+  }, [filePath, getPathAccess, isHost]);
+
+  // Ensure the editor is ALWAYS showing the correct model for the clicked file
   useEffect(() => {
     const editor = editorRef.current;
     const monacoApi = monacoRef.current;
@@ -96,7 +122,10 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     bindingRef.current?.destroy();
     bindingRef.current = null;
 
-    if (!filePath) return;
+    if (!filePath || !canView) {
+      editor.setModel(null as any);
+      return;
+    }
 
     const uri = toMonacoUri(monacoApi, filePath);
 
@@ -113,15 +142,23 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     if (editor.getModel() !== model) {
       editor.setModel(model);
     }
-  }, [filePath, language]);
 
-  // ✅ seed the shared Y.Text from initialContent (ONLY if it’s empty)
+    editor.updateOptions({ readOnly: !canEdit });
+  }, [filePath, language, canView, canEdit]);
+
+  // Seed the shared Y.Text from initialContent (ONLY if it’s empty)
   useEffect(() => {
     const seq = ++loadSeq.current;
 
     async function seedFromInitialContent() {
       if (!filePath) {
         setErr(null);
+        setLoading(false);
+        return;
+      }
+
+      if (!canView) {
+        setErr(accessReason ? accessMessage(accessReason) : "No permission to view this file.");
         setLoading(false);
         return;
       }
@@ -137,7 +174,6 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
 
       const seed = (initialContent ?? "").toString();
       if (!seed) {
-        // no seed available; still allow editing
         setErr(null);
         setLoading(false);
         return;
@@ -147,7 +183,6 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
       setErr(null);
 
       try {
-        // file switched while loading
         if (loadSeq.current !== seq) return;
 
         if (yText.length === 0) {
@@ -164,10 +199,10 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
       }
     }
 
-    seedFromInitialContent();
-  }, [doc, filePath, initialContent]);
+    void seedFromInitialContent();
+  }, [doc, filePath, initialContent, canView, accessReason]);
 
-  // ✅ bind Monaco model <-> Y.Text and re-bind when Monaco swaps models
+  // Bind Monaco model <-> Y.Text and re-bind when Monaco swaps models
   useEffect(() => {
     const editor = editorRef.current;
 
@@ -175,7 +210,7 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     bindingRef.current?.destroy();
     bindingRef.current = null;
 
-    if (!editor || !filePath) return;
+    if (!editor || !filePath || !canView) return;
 
     const bind = () => {
       bindingRef.current?.destroy();
@@ -189,12 +224,10 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
 
       const yText = getOrCreateYText(doc, filePath);
 
-      bindingRef.current = new MonacoBinding(
-        yText,
-        model,
-        new Set([editor]),
-        awareness
-      );
+      // MonacoBinding still applies remote updates even if editor is readOnly.
+      editor.updateOptions({ readOnly: !canEdit });
+
+      bindingRef.current = new MonacoBinding(yText, model, new Set([editor]), awareness);
     };
 
     // bind now
@@ -208,7 +241,44 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
       bindingRef.current?.destroy();
       bindingRef.current = null;
     };
-  }, [doc, awareness, filePath]);
+  }, [doc, awareness, filePath, canView, canEdit]);
+
+  const headerRight = (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      {filePath && (
+        <span
+          style={{
+            fontSize: 12,
+            padding: "3px 8px",
+            borderRadius: 999,
+            border: "1px solid rgba(0,0,0,0.15)",
+            background: "rgba(0,0,0,0.03)",
+            opacity: 0.9,
+          }}
+          title={`Role: ${role} • Permission: ${level}`}
+        >
+          {canEdit ? "Editable" : level === "view" ? "Read-only" : "No access"}
+        </span>
+      )}
+
+      {filePath && canView && !canEdit && role !== "host" && (
+        <button
+          onClick={() => requestEdit(filePath)}
+          style={{
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid #d1d5db",
+            background: "#fff",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+          title="Ask the host to grant edit permission for this file"
+        >
+          Request edit
+        </button>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -251,29 +321,41 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
             {err}
           </div>
         )}
+
+        {headerRight}
       </div>
 
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-        <Editor
-          // model identity is handled explicitly in the effect via monaco.editor + setModel
-          // keep this stable to avoid @monaco-editor/react creating weird URIs on Windows
-          path={"inmemory://editor"}
-          language={language}
-          theme="vs"
-          onMount={(editor, monacoApi) => {
-            editorRef.current = editor;
-            monacoRef.current = monacoApi as unknown as typeof monaco;
-          }}
-          options={{
-            automaticLayout: true,
-            minimap: { enabled: false },
-            fontSize: 14,
-            tabSize: 2,
-            insertSpaces: true,
-            wordWrap: "on",
-            scrollBeyondLastLine: false,
-          }}
-        />
+        {!filePath ? (
+          <div style={{ padding: 18, opacity: 0.7 }}>Select a file to start.</div>
+        ) : !canView ? (
+          <div style={{ padding: 18, color: "crimson" }}>
+            {accessReason ? accessMessage(accessReason) : "You don't have permission to view this file."}
+          </div>
+        ) : (
+          <Editor
+            // model identity is handled explicitly via monaco.editor + setModel
+            path={"inmemory://editor"}
+            language={language}
+            theme="vs"
+            onMount={(editor, monacoApi) => {
+              editorRef.current = editor;
+              monacoRef.current = monacoApi as unknown as typeof monaco;
+              editor.updateOptions({ readOnly: !canEdit });
+            }}
+            options={{
+              automaticLayout: true,
+              minimap: { enabled: false },
+              fontSize: 14,
+              tabSize: 2,
+              insertSpaces: true,
+              wordWrap: "on",
+              scrollBeyondLastLine: false,
+              readOnly: !canEdit,
+              domReadOnly: !canEdit,
+            }}
+          />
+        )}
       </div>
     </div>
   );
