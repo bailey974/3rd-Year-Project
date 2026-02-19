@@ -7,9 +7,14 @@ import { invoke } from "@tauri-apps/api/core";
 
 type TerminalDataPayload = { id: string; data: string };
 type TerminalExitPayload = { id: string };
+
 type Task = { label: string; cmd: string };
 
-export default function TerminalPanel({ cwd }: { cwd?: string }) {
+type Props = {
+  cwd?: string;
+};
+
+export default function TerminalPanel({ cwd }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const termRef = useRef<Terminal | null>(null);
@@ -22,6 +27,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
 
   const [ready, setReady] = useState(false);
   const [selectedTask, setSelectedTask] = useState<string>("");
+  const [statusText, setStatusText] = useState<string>("starting…");
 
   const tasks: Task[] = useMemo(
     () => [
@@ -46,15 +52,52 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
     []
   );
 
-  function sendLine(line: string) {
+  function writeRaw(data: string) {
     const id = termIdRef.current;
-    const term = termRef.current;
-    if (!id || !term) return;
+    if (!id) return;
 
-    invoke("terminal_write", { id, data: line + "\r\n" }).catch((e) => {
-      term.writeln(`\r\n[write error] ${String(e)}`);
+    invoke("terminal_write", { id, data }).catch((e) => {
+      termRef.current?.writeln(`\r\n[write error] ${String(e)}`);
     });
+  }
 
+  function sendLine(line: string) {
+    writeRaw(line + "\r\n");
+    termRef.current?.focus();
+  }
+
+  async function pasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) writeRaw(text);
+    } catch (e) {
+      termRef.current?.writeln(`\r\n[paste error] ${String(e)}`);
+    }
+  }
+
+  async function copySelection() {
+    const term = termRef.current;
+    if (!term) return;
+
+    const selection = term.getSelection();
+    if (!selection) return;
+
+    try {
+      await navigator.clipboard.writeText(selection);
+      // VS Code clears selection after copy via context menu
+      term.clearSelection();
+    } catch (e) {
+      term.writeln(`\r\n[copy error] ${String(e)}`);
+    }
+  }
+
+  function clearLocal() {
+    const term = termRef.current;
+    if (!term) return;
+    // VS Code “trash” clears scrollback locally without sending a shell command.
+    term.reset();
+    // Nudge the PTY so the prompt redraws cleanly.
+    writeRaw("\r");
     term.focus();
   }
 
@@ -69,9 +112,41 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
       fontSize: 13,
       scrollback: 5000,
       disableStdin: false,
+      allowTransparency: true,
+      windowsMode: true,
+      theme: {
+        background: "#0b0f14",
+        foreground: "#e5e7eb",
+      },
     });
+
     const fit = new FitAddon();
     term.loadAddon(fit);
+
+    // VS Code-like keybindings:
+    // - Ctrl+C: SIGINT (never copy)
+    // - Ctrl+Shift+C: Copy selection
+    // - Ctrl+V / Ctrl+Shift+V: Paste
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+
+      const isCtrl = ev.ctrlKey || ev.metaKey;
+      const isShift = ev.shiftKey;
+
+      // Copy selection
+      if (isCtrl && isShift && ev.code === "KeyC") {
+        void copySelection();
+        return false;
+      }
+
+      // Paste
+      if (isCtrl && (ev.code === "KeyV" || (isShift && ev.code === "KeyV"))) {
+        void pasteFromClipboard();
+        return false;
+      }
+
+      return true;
+    });
 
     term.open(container);
 
@@ -85,6 +160,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
     fitRef.current = fit;
 
     term.writeln("[starting shell…]");
+    setStatusText("starting…");
 
     // Focus management (Monaco often steals focus)
     const focusTerminal = () => term.focus();
@@ -94,6 +170,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
     const ro = new ResizeObserver(() => {
       const id = termIdRef.current;
       if (!id) return;
+
       fit.fit();
       invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
     });
@@ -103,6 +180,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
     let unlistenExit: null | (() => void) = null;
 
     let disposeOnData: null | (() => void) = null;
+    let removeContextMenu: null | (() => void) = null;
 
     (async () => {
       // 1) Start listening BEFORE creating the PTY (prevents missing the first prompt)
@@ -126,6 +204,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
         if (activeId && event.payload.id === activeId) {
           term.writeln("\r\n[process exited]");
           setReady(false);
+          setStatusText("exited");
         }
       });
 
@@ -141,6 +220,21 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
 
       termIdRef.current = id;
 
+      // Context menu: VS Code terminal behavior
+      // - If there's a selection -> copy
+      // - Else -> paste
+      const onContextMenu = (e: MouseEvent) => {
+        e.preventDefault();
+        const t = termRef.current;
+        if (t?.hasSelection()) {
+          void copySelection();
+        } else {
+          void pasteFromClipboard();
+        }
+      };
+      container.addEventListener("contextmenu", onContextMenu);
+      removeContextMenu = () => container.removeEventListener("contextmenu", onContextMenu);
+
       // 3) Flush any buffered output (including the first prompt)
       const buffered = pendingByIdRef.current[id];
       if (buffered) {
@@ -151,6 +245,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
       if (exitedIdsRef.current[id]) {
         term.writeln("\r\n[process exited]");
         setReady(false);
+        setStatusText("exited");
         return;
       }
 
@@ -169,10 +264,12 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
 
       term.writeln("\r\n[terminal ready]");
       setReady(true);
+      setStatusText("ready");
       requestAnimationFrame(() => term.focus());
     })().catch((e) => {
       term.writeln(`\r\n[terminal init error] ${String(e)}`);
       setReady(false);
+      setStatusText("error");
     });
 
     return () => {
@@ -180,7 +277,9 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
       ro.disconnect();
 
       if (disposeOnData) disposeOnData();
+      if (removeContextMenu) removeContextMenu();
 
+      // These are functions returned by `listen`, they should be called directly
       if (unlistenData) unlistenData();
       if (unlistenExit) unlistenExit();
 
@@ -192,9 +291,6 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
       setReady(false);
     };
   }, [cwd]);
-
-  // Use cls on Windows, clear on others (either is harmless if the other isn’t found)
-  const clearCmd = "cls";
 
   return (
     <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column" }}>
@@ -211,6 +307,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
         }}
       >
         <div style={{ fontWeight: 600 }}>Terminal</div>
+        <div style={{ fontSize: 12, opacity: 0.75 }}>{statusText}</div>
 
         <select
           value={selectedTask}
@@ -241,7 +338,7 @@ export default function TerminalPanel({ cwd }: { cwd?: string }) {
 
         <button
           disabled={!ready}
-          onClick={() => sendLine(clearCmd)}
+          onClick={clearLocal}
           style={{
             marginLeft: "auto",
             padding: "4px 10px",

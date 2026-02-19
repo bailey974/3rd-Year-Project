@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import Editor from "@monaco-editor/react";
-import type * as monaco from "monaco-editor";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+import type * as MonacoNs from "monaco-editor";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { MonacoBinding } from "y-monaco";
 
@@ -61,10 +61,16 @@ export default function CodeEditor({ filePath }: Props) {
   const loadSeq = useRef(0);
 
   // Monaco refs
-  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const editorRef = useRef<MonacoNs.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
 
   const language = useMemo(() => inferLanguage(filePath), [filePath]);
+
+  const handleMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+  };
 
   // 1) Seed the shared Y.Text from disk (ONLY if it’s empty)
   useEffect(() => {
@@ -114,7 +120,40 @@ export default function CodeEditor({ filePath }: Props) {
     seedFromDisk();
   }, [doc, filePath]);
 
-  // 2) Bind Monaco model <-> Y.Text whenever file or editor changes
+  // 2) Ensure Monaco uses the model that corresponds to the currently selected file.
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+
+    // No file selected -> a single in-memory model
+    if (!filePath) {
+      const uri = monaco.Uri.parse("inmemory://model");
+      let model = monaco.editor.getModel(uri);
+      if (!model) model = monaco.editor.createModel("", "plaintext", uri);
+      editor.setModel(model);
+      return;
+    }
+
+    const uri = monaco.Uri.file(filePath);
+    const yText = getOrCreateYText(doc, filePath);
+    const yValue = yText.toString();
+
+    let model = monaco.editor.getModel(uri);
+    if (!model) {
+      model = monaco.editor.createModel(yValue, language, uri);
+    } else {
+      monaco.editor.setModelLanguage(model, language);
+      // If the model is empty but the collaborative doc already has content, seed it.
+      if (model.getValueLength() === 0 && yValue.length > 0) {
+        model.setValue(yValue);
+      }
+    }
+
+    editor.setModel(model);
+  }, [doc, filePath, language]);
+
+  // 3) Bind Monaco model <-> Y.Text whenever file or editor changes
   useEffect(() => {
     const editor = editorRef.current;
 
@@ -132,12 +171,7 @@ export default function CodeEditor({ filePath }: Props) {
 
     const yText = getOrCreateYText(doc, filePath);
 
-    bindingRef.current = new MonacoBinding(
-      yText,
-      model,
-      new Set([editor]),
-      awareness
-    );
+    bindingRef.current = new MonacoBinding(yText, model, new Set([editor]), awareness);
 
     return () => {
       bindingRef.current?.destroy();
@@ -190,13 +224,8 @@ export default function CodeEditor({ filePath }: Props) {
 
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         <Editor
-          // This helps Monaco keep distinct models per file
-          path={filePath ?? "inmemory://model"}
-          language={language}
           theme="vs"
-          onMount={(editor) => {
-            editorRef.current = editor;
-          }}
+          onMount={handleMount}
           options={{
             automaticLayout: true,
             minimap: { enabled: false },

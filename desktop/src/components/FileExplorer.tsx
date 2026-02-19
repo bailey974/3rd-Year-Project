@@ -1,5 +1,6 @@
 // src/components/FileExplorer.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { readDir, readTextFile } from "@tauri-apps/plugin-fs";
 
 type FsEntry = {
   name: string;
@@ -22,23 +23,90 @@ type ReadResponse = {
 export type RequestJson = <T = any>(path: string, opts?: RequestInit) => Promise<T>;
 
 type Props = {
-  requestJson: RequestJson;
+  /**
+   * If provided, FileExplorer will try HTTP routes first.
+   * If omitted (or the HTTP call fails), it falls back to Tauri FS plugin.
+   */
+  requestJson?: RequestJson;
 
-  // starting folder (server-dependent). Examples: "", "/", "C:\\Users\\..."
+  /** Starting folder (server-dependent). Examples: "", "/", "C:\\Users\\..." */
   initialPath?: string;
 
-  // called when a file is opened
+  /**
+   * Backwards-compatible "selection" callback.
+   * If your app already uses `onFileSelect(fileId, fileName)` style, you can keep it.
+   * We call it with (fullPath, name).
+   */
+  onFileSelect?: (filePath: string, fileName?: string) => void;
+
+  /**
+   * Called when a file is opened AND its contents were read.
+   * (If you only need the path, use onFileSelect or set activePath from parent.)
+   */
   onOpenFile?: (filePath: string, content: string) => void;
 
-  // optional UI: highlight selected file
+  /** Optional UI: highlight selected file */
   activePath?: string;
 
   className?: string;
 };
 
+// Minimal shape of @tauri-apps/plugin-fs DirEntry
+type TauriDirEntry = {
+  name: string;
+  isDirectory: boolean;
+  isFile: boolean;
+  isSymlink: boolean;
+};
+
+function isWindowsLikePath(p: string): boolean {
+  return /^(?:[A-Za-z]:\\|[A-Za-z]:\/|\\\\)/.test(p) || p.includes("\\");
+}
+
+function joinChildPath(parent: string, childName: string): string {
+  if (!parent) return childName;
+
+  // If user is at a Windows drive root like "C:" or "C:/" or "C:\"
+  const driveOnly = parent.replace(/[\\/]+$/, "");
+  if (/^[A-Za-z]:$/.test(driveOnly)) {
+    return `${driveOnly}\\${childName}`;
+  }
+
+  const sep = isWindowsLikePath(parent) ? "\\" : "/";
+  const base = parent.replace(/[\\/]+$/, "");
+  if (base === "") return sep + childName;
+  if (base === "/") return "/" + childName;
+  return base + sep + childName;
+}
+
+function parentPath(p: string): string | null {
+  const trimmed = p.replace(/[\\/]+$/, "");
+  if (!trimmed) return null;
+
+  // Windows drive paths
+  const driveMatch = trimmed.match(/^([A-Za-z]:)([\\/].*)?$/);
+  if (driveMatch) {
+    const drive = driveMatch[1];
+    const rest = trimmed.slice(drive.length);
+    if (!rest || rest === "\\" || rest === "/") return null; // already at drive root
+
+    const sep = isWindowsLikePath(trimmed) ? "\\" : "/";
+    const idx = trimmed.lastIndexOf(sep);
+    if (idx <= drive.length) return `${drive}${sep}`;
+    return trimmed.slice(0, idx);
+  }
+
+  // POSIX
+  if (trimmed === "/") return null;
+  const idx = trimmed.lastIndexOf("/");
+  if (idx <= 0) return "/";
+  return trimmed.slice(0, idx);
+}
+
 export default function FileExplorer({
   requestJson,
   initialPath = "",
+  onFileSelect,
   onOpenFile,
   activePath,
   className,
@@ -48,6 +116,12 @@ export default function FileExplorer({
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+
+  // internal selection fallback if parent doesn't provide activePath
+  const [internalActive, setInternalActive] = useState<string | null>(null);
+
+  // Guard against out-of-order async loads
+  const refreshSeq = useRef(0);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -59,69 +133,137 @@ export default function FileExplorer({
     });
   }, [entries, filter]);
 
+  function normalizeEntryType(type: any): "file" | "dir" {
+    const t = String(type ?? "").toLowerCase();
+    return t === "dir" || t === "directory" ? "dir" : "file";
+  }
+
+  async function listViaHttp(path: string): Promise<ListResponse> {
+    // Expected: { path, entries: [{name, path, type:'file'|'dir'}...] }
+    return await requestJson!(`/fs/list?path=${encodeURIComponent(path)}`);
+  }
+
+  async function listViaTauri(path: string): Promise<ListResponse> {
+    const dir = await readDir(path);
+    const mapped: FsEntry[] = (dir as unknown as TauriDirEntry[])
+      .filter((d) => !!d?.name)
+      .map((d) => ({
+        name: d.name,
+        path: joinChildPath(path, d.name),
+        type: d.isDirectory ? "dir" : "file",
+      }));
+
+    return { path, entries: mapped };
+  }
+
   async function refresh(path = cwd) {
+    const seq = ++refreshSeq.current;
     setLoading(true);
     setErr(null);
-    try {
-      // Adjust this route to your backend
-      // Expected: { path, entries: [{name, path, type:'file'|'dir'}...] }
-      const data = await requestJson<ListResponse>(`/fs/list?path=${encodeURIComponent(path)}`);
 
-      const sorted = [...(data.entries ?? [])].sort((a, b) => {
-        if (a.type !== b.type) return a.type === "dir" ? -1 : 1; // dirs first
-        return a.name.localeCompare(b.name);
-      });
+    try {
+      let data: ListResponse | null = null;
+
+      // Try HTTP first (if available)
+      if (requestJson) {
+        try {
+          data = await listViaHttp(path);
+        } catch {
+          data = null;
+        }
+      }
+
+      // Fallback to Tauri FS
+      if (!data) {
+        data = await listViaTauri(path);
+      }
+
+      if (refreshSeq.current !== seq) return;
+
+      const sorted = [...(data.entries ?? [])]
+        .map((e) => ({ ...e, type: normalizeEntryType((e as any).type) }))
+        .sort((a, b) => {
+          if (a.type !== b.type) return a.type === "dir" ? -1 : 1; // dirs first
+          return a.name.localeCompare(b.name);
+        });
 
       setCwd(data.path ?? path);
       setEntries(sorted);
+
+      setInternalActive((prev) => {
+        if (!prev) return prev;
+        const stillThere = sorted.some((e) => e.path === prev);
+        return stillThere ? prev : null;
+      });
     } catch (e: any) {
-      setErr(e?.message ?? "Failed to load directory.");
+      if (refreshSeq.current === seq) setErr(e?.message ?? "Failed to load directory.");
     } finally {
-      setLoading(false);
+      if (refreshSeq.current === seq) setLoading(false);
     }
   }
 
-  async function openEntry(e: FsEntry) {
-    if (e.type === "dir") {
-      await refresh(e.path);
+  async function readViaHttp(path: string): Promise<ReadResponse> {
+    // Expected: { path, content }
+    return await requestJson!(`/fs/read?path=${encodeURIComponent(path)}`);
+  }
+
+  async function readViaTauri(path: string): Promise<ReadResponse> {
+    const content = await readTextFile(path);
+    return { path, content };
+  }
+
+  async function openEntry(entry: FsEntry) {
+    if (entry.type === "dir") {
+      await refresh(entry.path);
       return;
     }
 
+    const seq = ++refreshSeq.current;
+    setLoading(true);
+    setErr(null);
+
     try {
-      setLoading(true);
-      setErr(null);
+      let data: ReadResponse | null = null;
 
-      // Adjust this route to your backend
-      // Expected: { path, content }
-      const data = await requestJson<ReadResponse>(`/fs/read?path=${encodeURIComponent(e.path)}`);
+      if (requestJson) {
+        try {
+          data = await readViaHttp(entry.path);
+        } catch {
+          data = null;
+        }
+      }
 
-      onOpenFile?.(data.path ?? e.path, data.content ?? "");
+      if (!data) {
+        data = await readViaTauri(entry.path);
+      }
+
+      if (refreshSeq.current !== seq) return;
+
+      const finalPath = data.path ?? entry.path;
+      setInternalActive(finalPath);
+
+      // Call BOTH callbacks for compatibility (extra args are ignored in JS)
+      onFileSelect?.(finalPath, entry.name);
+      onOpenFile?.(finalPath, data.content ?? "");
     } catch (ex: any) {
-      setErr(ex?.message ?? "Failed to open file.");
+      if (refreshSeq.current === seq) setErr(ex?.message ?? "Failed to open file.");
     } finally {
-      setLoading(false);
+      if (refreshSeq.current === seq) setLoading(false);
     }
   }
 
   function goUp() {
-    // Works for both "/" and "C:\..." style paths
-    const p = cwd.replace(/[\\\/]+$/, "");
+    const p = parentPath(cwd);
     if (!p) return;
-
-    const sep = p.includes("\\") ? "\\" : "/";
-    const idx = p.lastIndexOf(sep);
-    if (idx <= 0) {
-      // back to root-ish
-      refresh(sep);
-      return;
-    }
-    refresh(p.slice(0, idx));
+    refresh(p);
   }
 
   useEffect(() => {
     refresh(initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const effectiveActive = activePath ?? internalActive;
 
   return (
     <div
@@ -137,7 +279,15 @@ export default function FileExplorer({
     >
       {/* Header / Toolbar */}
       <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "center" }}>
-        <div style={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div
+          style={{
+            fontWeight: 600,
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
           Files
         </div>
 
@@ -169,7 +319,7 @@ export default function FileExplorer({
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter files..."
+          placeholder="Filter files…"
           style={{
             width: "100%",
             padding: "8px 10px",
@@ -197,13 +347,25 @@ export default function FileExplorer({
           <div style={{ padding: 10, opacity: 0.75 }}>No files.</div>
         ) : (
           filtered.map((e) => {
-            const isActive = !!activePath && activePath === e.path;
+            const isActive = !!effectiveActive && effectiveActive === e.path;
+            const isDir = e.type === "dir";
 
             return (
               <div
                 key={e.path}
-                onDoubleClick={() => openEntry(e)}
-                onClick={() => e.type === "file" && openEntry(e)}
+                onClick={() => {
+                  setInternalActive(e.path);
+
+                  if (!isDir) {
+                    // Immediate "open" signal (path only) — feels like VS Code
+                    onFileSelect?.(e.path, e.name);
+                    // Also try to read content (if onOpenFile is wired)
+                    void openEntry(e);
+                  }
+                }}
+                onDoubleClick={() => {
+                  if (isDir) void openEntry(e);
+                }}
                 title={e.path}
                 style={{
                   padding: "8px 10px",
@@ -212,12 +374,20 @@ export default function FileExplorer({
                   alignItems: "center",
                   gap: 8,
                   background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
+                  userSelect: "none",
                 }}
               >
                 <span style={{ width: 16, textAlign: "center", opacity: 0.9 }}>
-                  {e.type === "dir" ? "📁" : "📄"}
+                  {isDir ? "📁" : "📄"}
                 </span>
-                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span
+                  style={{
+                    flex: 1,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
                   {e.name}
                 </span>
               </div>
