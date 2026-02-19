@@ -1,5 +1,20 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, FormEvent } from "react";
-import { HashRouter, Routes, Route, Navigate, Link, useLocation, useNavigate } from "react-router-dom";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  FormEvent,
+} from "react";
+import {
+  HashRouter,
+  Routes,
+  Route,
+  Navigate,
+  Link,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import CodeEditor from "./components/CodeEditor";
 import TerminalPanel from "./components/TerminalPanel";
@@ -11,7 +26,8 @@ import { CollabProvider, useCollab } from "./collab/CollabProvider";
    API
 ========================= */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() ?? "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL?.toString() ?? "http://localhost:8000";
 
 type User = { id: number | string; email: string; username?: string };
 
@@ -21,7 +37,10 @@ type AuthResponse = {
   user?: User;
 };
 
-async function requestJson<T>(path: string, opts: RequestInit & { token?: string | null } = {}): Promise<T> {
+async function requestJson<T>(
+  path: string,
+  opts: RequestInit & { token?: string | null } = {}
+): Promise<T> {
   const headers = new Headers(opts.headers);
 
   if (!headers.has("Content-Type") && !(opts.body instanceof FormData)) {
@@ -30,7 +49,10 @@ async function requestJson<T>(path: string, opts: RequestInit & { token?: string
 
   if (opts.token) headers.set("Authorization", `Bearer ${opts.token}`);
 
-  const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...opts,
+    headers,
+  });
 
   if (!res.ok) {
     let msg = `Request failed (${res.status})`;
@@ -83,7 +105,9 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 const TOKEN_KEY = "auth_access_token";
 
 function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
+  const [token, setToken] = useState<string | null>(() =>
+    localStorage.getItem(TOKEN_KEY)
+  );
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -136,11 +160,10 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }
 
-  const value = useMemo<AuthContextValue>(() => ({ token, user, loading, login, register, logout }), [
-    token,
-    user,
-    loading,
-  ]);
+  const value = useMemo<AuthContextValue>(
+    () => ({ token, user, loading, login, register, logout }),
+    [token, user, loading]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
@@ -187,7 +210,9 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 }
 
 function PrimaryButton(
-  props: React.ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }
+  props: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    children: React.ReactNode;
+  }
 ) {
   const { children, ...rest } = props;
   return (
@@ -237,7 +262,15 @@ function LoginPage() {
   }
 
   return (
-    <div style={{ maxWidth: 440, margin: "72px auto", padding: 24, border: "1px solid #e5e7eb", borderRadius: 12 }}>
+    <div
+      style={{
+        maxWidth: 440,
+        margin: "72px auto",
+        padding: 24,
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+      }}
+    >
       <h1 style={{ margin: 0, marginBottom: 16 }}>Login</h1>
 
       {err && <div style={{ marginBottom: 12, color: "#b91c1c" }}>{err}</div>}
@@ -245,7 +278,11 @@ function LoginPage() {
       <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
         <label style={{ display: "grid", gap: 6 }}>
           <span>Email</span>
-          <Input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+          <Input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+          />
         </label>
 
         <label style={{ display: "grid", gap: 6 }}>
@@ -306,7 +343,15 @@ function RegisterPage() {
   }
 
   return (
-    <div style={{ maxWidth: 440, margin: "72px auto", padding: 24, border: "1px solid #e5e7eb", borderRadius: 12 }}>
+    <div
+      style={{
+        maxWidth: 440,
+        margin: "72px auto",
+        padding: 24,
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+      }}
+    >
       <h1 style={{ margin: 0, marginBottom: 16 }}>Create account</h1>
 
       {err && <div style={{ marginBottom: 12, color: "#b91c1c" }}>{err}</div>}
@@ -314,7 +359,11 @@ function RegisterPage() {
       <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
         <label style={{ display: "grid", gap: 6 }}>
           <span>Email</span>
-          <Input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+          <Input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+          />
         </label>
 
         <label style={{ display: "grid", gap: 6 }}>
@@ -367,7 +416,7 @@ function cheapDirname(p: string | null | undefined) {
 ========================= */
 
 type RoomMeta = {
-  docName: string; // used as roomId for y-websocket/hocuspocus
+  docName: string; // used as roomId for y-websocket
   name: string;
   joinCode: string;
   maxUsers: number;
@@ -399,158 +448,57 @@ function randomJoinCode(len = 8) {
   return out;
 }
 
-function RoomBar({ onOpenRoomDialog, onOpenRequests }: { onOpenRoomDialog: () => void; onOpenRequests: () => void }) {
-  const { roomId, status, role, members, visibility, isHost, setShareTreeEnabled, editRequests, terminalRequests } =
-    useCollab();
+function RoomBar({
+  onOpenRoomDialog,
+}: {
+  onOpenRoomDialog: () => void;
+}) {
+  const { roomId, status, awareness } = useCollab();
+  const [count, setCount] = useState<number>(1);
 
-  const pending = (editRequests?.length ?? 0) + (terminalRequests?.length ?? 0);
-
-  const roleLabel = role === "host" ? "Host" : role === "editor" ? "Editor" : "Viewer";
+  useEffect(() => {
+    const aw: any = awareness as any;
+    const update = () => {
+      try {
+        setCount((awareness as any)?.getStates?.()?.size ?? 1);
+      } catch {
+        setCount(1);
+      }
+    };
+    update();
+    aw?.on?.("change", update);
+    return () => aw?.off?.("change", update);
+  }, [awareness]);
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      <button onClick={onOpenRoomDialog} style={btnSm}>
+      <button
+        onClick={onOpenRoomDialog}
+        style={{
+          padding: "6px 10px",
+          border: "1px solid #d1d5db",
+          borderRadius: 6,
+          background: "#fff",
+          cursor: "pointer",
+        }}
+      >
         Rooms
       </button>
 
       <div style={{ fontSize: 12, opacity: 0.85 }}>
-        <b>{roomId}</b> • {status} • {members.length}/10 • {roleLabel} • tree:{visibility.shareTreeEnabled ? "shared" : "private"}
-      </div>
-
-      {isHost && (
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, opacity: 0.85 }}>
-          <input type="checkbox" checked={visibility.shareTreeEnabled} onChange={(e) => setShareTreeEnabled(e.target.checked)} />
-          Share tree
-        </label>
-      )}
-
-      {pending > 0 && (
-        <button onClick={onOpenRequests} style={{ ...btnSm, borderColor: "#111827" }} title="Review requests">
-          Requests ({pending})
-        </button>
-      )}
-    </div>
-  );
-}
-
-function RequestsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { isHost, editRequests, resolveEditRequest, terminalRequests, doc, setTerminalPolicy } = useCollab();
-
-  if (!open) return null;
-
-  const Y_TERM_POLICY = "terminal:policy";
-  const Y_TERM_REQUESTS = "terminal:requests";
-
-  const yPolicy = doc.getMap<any>(Y_TERM_POLICY);
-  const yReq = doc.getArray<any>(Y_TERM_REQUESTS);
-
-  const grantTerminal = (userId: string) => {
-    if (!isHost) return;
-    doc.transact(() => {
-      yPolicy.set("shared", true);
-      yPolicy.set("allowGuestInput", true);
-      yPolicy.set("controllerUserId", userId);
-      // remove any requests for that user
-      const arr = yReq.toArray();
-      for (let i = arr.length - 1; i >= 0; i--) {
-        if (String(arr[i]?.userId ?? "") === userId) yReq.delete(i, 1);
-      }
-    });
-    // keep provider snapshot in sync (host control)
-    setTerminalPolicy({ shared: true, allowGuestInput: true, controllerUserId: userId });
-  };
-
-  const denyTerminal = (id: string) => {
-    if (!isHost) return;
-    const idx = yReq.toArray().findIndex((x: any) => x?.id === id);
-    if (idx >= 0) doc.transact(() => yReq.delete(idx, 1));
-  };
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.35)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 9999,
-      }}
-      onMouseDown={onClose}
-    >
-      <div
-        style={{ width: 760, maxWidth: "92vw", background: "#fff", borderRadius: 12, padding: 14, border: "1px solid #e5e7eb" }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontWeight: 700 }}>Requests</div>
-          <div style={{ marginLeft: "auto" }}>
-            <button onClick={onClose} style={btnSm}>
-              ✕
-            </button>
-          </div>
-        </div>
-
-        {!isHost ? (
-          <div style={{ marginTop: 12, opacity: 0.8 }}>Only the host can approve requests.</div>
-        ) : (
-          <>
-            <div style={{ marginTop: 14, fontWeight: 700 }}>Edit requests</div>
-            {editRequests.length === 0 ? (
-              <div style={{ marginTop: 6, opacity: 0.75, fontSize: 12 }}>No edit requests.</div>
-            ) : (
-              <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-                {editRequests.map((r) => (
-                  <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 10, display: "flex", gap: 10, alignItems: "center" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, opacity: 0.8 }}>
-                        {r.requestedBy.name} requests edit access
-                      </div>
-                      <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {r.path}
-                      </div>
-                    </div>
-                    <button onClick={() => resolveEditRequest(r.id, false)} style={btnSm}>
-                      Deny
-                    </button>
-                    <button onClick={() => resolveEditRequest(r.id, true)} style={{ ...btnSm, background: "#111827", color: "#fff", borderColor: "#111827" }}>
-                      Approve
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div style={{ marginTop: 18, fontWeight: 700 }}>Terminal requests</div>
-            {terminalRequests.length === 0 ? (
-              <div style={{ marginTop: 6, opacity: 0.75, fontSize: 12 }}>No terminal requests.</div>
-            ) : (
-              <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-                {terminalRequests.map((r) => (
-                  <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 10, display: "flex", gap: 10, alignItems: "center" }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 12, opacity: 0.8 }}>{r.name} requests terminal control</div>
-                      <div style={{ fontSize: 12, opacity: 0.65 }}>{new Date(r.createdAt).toLocaleString()}</div>
-                    </div>
-                    <button onClick={() => denyTerminal(r.id)} style={btnSm}>
-                      Deny
-                    </button>
-                    <button onClick={() => grantTerminal(r.userId)} style={{ ...btnSm, background: "#111827", color: "#fff", borderColor: "#111827" }}>
-                      Grant
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
+        <b>{roomId}</b> • {status} • {count}/10
       </div>
     </div>
   );
 }
 
-function RoomDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+function RoomDialog({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
   const { setRoomId } = useCollab();
 
   const [tab, setTab] = useState<"create" | "join">("create");
@@ -569,7 +517,7 @@ function RoomDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
 
   const createRoom = () => {
-    const name = roomName.trim();
+    const name = (roomName ?? "").trim();
     if (name.length < 2) {
       setErr("Room name must be at least 2 characters.");
       return;
@@ -584,7 +532,7 @@ function RoomDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   };
 
   const joinRoom = () => {
-    const code = joinCode.trim().toUpperCase();
+    const code = (joinCode ?? "").trim().toUpperCase();
     if (code.length < 4) {
       setErr("Enter a valid join code.");
       return;
@@ -599,32 +547,78 @@ function RoomDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 9999,
+      }}
       onMouseDown={onClose}
     >
       <div
-        style={{ width: 480, maxWidth: "92vw", background: "#fff", borderRadius: 12, padding: 14, border: "1px solid #e5e7eb" }}
+        style={{
+          width: 480,
+          maxWidth: "92vw",
+          background: "#fff",
+          borderRadius: 12,
+          padding: 14,
+          border: "1px solid #e5e7eb",
+        }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ fontWeight: 700 }}>Rooms</div>
           <div style={{ marginLeft: "auto" }}>
-            <button onClick={onClose} style={btnSm}>
+            <button
+              onClick={onClose}
+              style={{
+                padding: "6px 10px",
+                border: "1px solid #d1d5db",
+                borderRadius: 6,
+                background: "#fff",
+                cursor: "pointer",
+              }}
+            >
               ✕
             </button>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <button onClick={() => setTab("create")} style={{ ...btnSm, background: tab === "create" ? "#f3f4f6" : "#fff" }}>
+          <button
+            onClick={() => setTab("create")}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: tab === "create" ? "#f3f4f6" : "#fff",
+              cursor: "pointer",
+            }}
+          >
             Create
           </button>
-          <button onClick={() => setTab("join")} style={{ ...btnSm, background: tab === "join" ? "#f3f4f6" : "#fff" }}>
+          <button
+            onClick={() => setTab("join")}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: tab === "join" ? "#f3f4f6" : "#fff",
+              cursor: "pointer",
+            }}
+          >
             Join
           </button>
         </div>
 
-        {err && <div style={{ marginTop: 10, color: "crimson", fontSize: 12 }}>{err}</div>}
+        {err && (
+          <div style={{ marginTop: 10, color: "crimson", fontSize: 12 }}>
+            {err}
+          </div>
+        )}
 
         {tab === "create" ? (
           <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
@@ -634,13 +628,25 @@ function RoomDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
                 value={roomName}
                 onChange={(e) => setRoomName(e.target.value)}
                 placeholder="e.g. Team Alpha"
-                style={{ padding: "8px 10px", border: "1px solid #d1d5db", borderRadius: 8, outline: "none" }}
+                style={{
+                  padding: "8px 10px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: 8,
+                  outline: "none",
+                }}
               />
             </label>
 
             <button
               onClick={createRoom}
-              style={{ border: "1px solid #111827", borderRadius: 8, background: "#111827", color: "#fff", padding: "8px 10px", cursor: "pointer" }}
+              style={{
+                border: "1px solid #111827",
+                borderRadius: 8,
+                background: "#111827",
+                color: "#fff",
+                padding: "8px 10px",
+                cursor: "pointer",
+              }}
             >
               Create room (max 10)
             </button>
@@ -653,79 +659,31 @@ function RoomDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value)}
                 placeholder="e.g. K7P9Q2XA"
-                style={{ padding: "8px 10px", border: "1px solid #d1d5db", borderRadius: 8, outline: "none" }}
+                style={{
+                  padding: "8px 10px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: 8,
+                  outline: "none",
+                }}
               />
             </label>
 
             <button
               onClick={joinRoom}
-              style={{ border: "1px solid #111827", borderRadius: 8, background: "#111827", color: "#fff", padding: "8px 10px", cursor: "pointer" }}
+              style={{
+                border: "1px solid #111827",
+                borderRadius: 8,
+                background: "#111827",
+                color: "#fff",
+                padding: "8px 10px",
+                cursor: "pointer",
+              }}
             >
               Join room
             </button>
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function PeoplePanel() {
-  const { members, isHost, setMemberRole, me, role } = useCollab();
-  const [open, setOpen] = useState(true);
-
-  return (
-    <div style={{ borderBottom: "1px solid #e5e7eb" }}>
-      <div style={{ padding: 10, display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ fontWeight: 700, flex: 1 }}>People ({members.length})</div>
-        <button onClick={() => setOpen((v) => !v)} style={btnSm}>
-          {open ? "Hide" : "Show"}
-        </button>
-      </div>
-
-      {open && (
-        <div style={{ padding: "0 10px 10px 10px", display: "grid", gap: 8 }}>
-          {members.map((m) => {
-            const self = m.userId === me.userId;
-            return (
-              <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 999, background: m.color, display: "inline-block" }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {m.name} {self ? <span style={{ opacity: 0.6 }}>(you)</span> : null}
-                  </div>
-                  <div style={{ fontSize: 11, opacity: 0.7 }}>{m.role}</div>
-                </div>
-
-                {isHost && !self && role === "host" ? (
-                  <select
-                    value={m.role}
-                    onChange={(e) => setMemberRole(m.userId, e.target.value as any)}
-                    style={{ padding: "4px 6px", fontSize: 12 }}
-                    title="Host can grant editor/viewer role"
-                  >
-                    <option value="viewer">viewer</option>
-                    <option value="editor">editor</option>
-                  </select>
-                ) : (
-                  <span
-                    style={{
-                      fontSize: 11,
-                      padding: "2px 8px",
-                      borderRadius: 999,
-                      border: "1px solid rgba(0,0,0,0.15)",
-                      background: "rgba(0,0,0,0.03)",
-                      opacity: 0.85,
-                    }}
-                  >
-                    {m.role}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
@@ -740,7 +698,7 @@ function AppShell() {
   const [showTerminal, setShowTerminal] = useState(true);
   const [showChat, setShowChat] = useState(true);
 
-  // file open state (only needs the current active file + its initial content)
+  // ✅ these are the only states we need for file opening
   const [activePath, setActivePath] = useState<string | undefined>();
   const [activeContent, setActiveContent] = useState<string>("");
 
@@ -748,11 +706,11 @@ function AppShell() {
 
   // Auth wrapper for FileExplorer calls
   const authedRequestJson = useMemo(() => {
-    return <T,>(path: string, opts: RequestInit = {}) => requestJson<T>(path, { ...opts, token });
+    return <T,>(path: string, opts: RequestInit = {}) =>
+      requestJson<T>(path, { ...opts, token });
   }, [token]);
 
   const [roomDialogOpen, setRoomDialogOpen] = useState(false);
-  const [requestsOpen, setRequestsOpen] = useState(false);
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -768,58 +726,131 @@ function AppShell() {
           flex: "0 0 auto",
         }}
       >
-        <div style={{ fontWeight: 600 }}>Room Collaboration Workspace</div>
+        <div style={{ fontWeight: 600 }}>Collaborative Code Editor</div>
 
-        <RoomBar onOpenRoomDialog={() => setRoomDialogOpen(true)} onOpenRequests={() => setRequestsOpen(true)} />
+        <RoomBar onOpenRoomDialog={() => setRoomDialogOpen(true)} />
 
-        <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
           <div style={{ fontSize: 12, opacity: 0.75 }}>{user?.email}</div>
 
-          <button onClick={() => setShowTerminal((v) => !v)} style={btnSm}>
+          <button
+            onClick={() => setShowTerminal((v) => !v)}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
             {showTerminal ? "Hide Terminal" : "Show Terminal"}
           </button>
 
-          <button onClick={() => setShowChat((v) => !v)} style={btnSm}>
+          <button
+            onClick={() => setShowChat((v) => !v)}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
             {showChat ? "Hide Chat" : "Show Chat"}
           </button>
 
-          <button onClick={logout} style={btnSm}>
+          <button
+            onClick={logout}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #d1d5db",
+              borderRadius: 6,
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          >
             Logout
           </button>
         </div>
       </div>
 
       {/* Body */}
-      <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", minWidth: 0 }}>
-        <aside style={{ width: 340, minWidth: 260, maxWidth: 560, borderRight: "1px solid #e5e7eb", overflow: "hidden" }}>
-          <PeoplePanel />
-          <div style={{ height: "calc(100% - 0px)" }}>
-            <FileExplorer
-              requestJson={authedRequestJson}
-              activePath={activePath}
-              onOpenFile={(path: string, content: string) => {
-                setActivePath(path);
-                setActiveContent(content ?? "");
-              }}
-            />
-          </div>
+      <div
+        style={{
+          flex: "1 1 auto",
+          minHeight: 0,
+          display: "flex",
+          minWidth: 0,
+        }}
+      >
+        <aside
+          style={{
+            width: 320,
+            minWidth: 240,
+            maxWidth: 520,
+            borderRight: "1px solid #e5e7eb",
+            overflow: "hidden",
+          }}
+        >
+          <FileExplorer
+            requestJson={authedRequestJson}
+            activePath={activePath}
+            onOpenFile={(path: string, content: string) => {
+              // ✅ critical: CodeEditor must receive the new filePath
+              setActivePath(path);
+              // ✅ also pass initial content so editor can seed Yjs without local FS permissions
+              setActiveContent(content ?? "");
+            }}
+          />
         </aside>
 
-        <main style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "row" }}>
-          <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <main
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "row",
+          }}
+        >
+          <div
+            style={{
+              flex: "1 1 auto",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
             <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-              <CodeEditor filePath={activePath ?? null} initialContent={activeContent} />
+              <CodeEditor
+                filePath={activePath ?? null}
+                initialContent={activeContent}
+              />
             </div>
 
             {showTerminal && (
-              <div style={{ height: 260, borderTop: "1px solid #e5e7eb" }}>
+              <div style={{ height: 240, borderTop: "1px solid #e5e7eb" }}>
                 <TerminalPanel cwd={cwd ?? undefined} />
               </div>
             )}
           </div>
 
           {showChat && (
-            <div style={{ width: 320, borderLeft: "1px solid #e5e7eb", display: "flex", flexDirection: "column" }}>
+            <div
+              style={{
+                width: 300,
+                borderLeft: "1px solid #e5e7eb",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
               <ChatPanel />
             </div>
           )}
@@ -827,7 +858,6 @@ function AppShell() {
       </div>
 
       <RoomDialog open={roomDialogOpen} onClose={() => setRoomDialogOpen(false)} />
-      <RequestsDialog open={requestsOpen} onClose={() => setRequestsOpen(false)} />
     </div>
   );
 }
@@ -837,15 +867,15 @@ function AppShell() {
 ========================= */
 
 function CollabWrapper() {
-  const { user, token } = useAuth();
+  const { user } = useAuth();
   const meta = loadRoomMeta();
 
   return (
     <CollabProvider
       defaultRoomId={meta?.docName ?? "main-room"}
       displayName={user?.email?.split("@")[0] ?? "Guest"}
-      userId={user?.id ?? user?.email ?? "guest"}
-      token={token ?? ""}
+          wsUrl={import.meta.env.VITE_COLLAB_WS_URL ?? "wss://threerd-year-project-s8vz.onrender.com"}
+
     >
       <AppShell />
     </CollabProvider>
@@ -875,11 +905,3 @@ export default function App() {
     </HashRouter>
   );
 }
-
-const btnSm: React.CSSProperties = {
-  padding: "6px 10px",
-  border: "1px solid #d1d5db",
-  borderRadius: 6,
-  background: "#fff",
-  cursor: "pointer",
-};

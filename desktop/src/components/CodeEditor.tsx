@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
 import { MonacoBinding } from "y-monaco";
@@ -84,9 +85,257 @@ function accessMessage(reason: string) {
   }
 }
 
+function basename(p: string) {
+  const norm = p.replace(/\\/g, "/");
+  const parts = norm.split("/");
+  return parts[parts.length - 1] || "file";
+}
+
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // best-effort fallback
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } finally {
+      document.body.removeChild(ta);
+    }
+  }
+}
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+type MenuKey = "File" | "Edit" | "Selection" | "View" | "Go" | "Help";
+
+function MenuBar(props: {
+  disabled: boolean;
+  openMenu: MenuKey | null;
+  setOpenMenu: (m: MenuKey | null) => void;
+  run: (actionId: string) => void;
+  onDownload: () => void;
+  onCopyPath: () => void;
+  onToggleWordWrap: () => void;
+  onToggleMinimap: () => void;
+  onToggleLineNumbers: () => void;
+  wordWrapOn: boolean;
+  minimapOn: boolean;
+  lineNumbersOn: boolean;
+}) {
+  const {
+    disabled,
+    openMenu,
+    setOpenMenu,
+    run,
+    onDownload,
+    onCopyPath,
+    onToggleWordWrap,
+    onToggleMinimap,
+    onToggleLineNumbers,
+    wordWrapOn,
+    minimapOn,
+    lineNumbersOn,
+  } = props;
+
+  const menuBtn = (k: MenuKey) => {
+    const active = openMenu === k;
+    return (
+      <button
+        type="button"
+        onClick={() => setOpenMenu(active ? null : k)}
+        disabled={disabled && k !== "Help"}
+        style={{
+          padding: "6px 10px",
+          borderRadius: 8,
+          border: "1px solid transparent",
+          background: active ? "rgba(0,0,0,0.06)" : "transparent",
+          cursor: disabled && k !== "Help" ? "not-allowed" : "pointer",
+          fontSize: 13,
+          opacity: disabled && k !== "Help" ? 0.5 : 1,
+          userSelect: "none",
+        }}
+      >
+        {k}
+      </button>
+    );
+  };
+
+  const item = (
+    label: string,
+    onClick: () => void,
+    opts?: { disabled?: boolean; hint?: string; checked?: boolean }
+  ) => {
+    const isDisabled = !!opts?.disabled;
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          if (!isDisabled) onClick();
+          setOpenMenu(null);
+        }}
+        disabled={isDisabled}
+        style={{
+          width: "100%",
+          textAlign: "left",
+          padding: "8px 10px",
+          border: "none",
+          background: "transparent",
+          cursor: isDisabled ? "not-allowed" : "pointer",
+          fontSize: 13,
+          opacity: isDisabled ? 0.5 : 1,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        <span style={{ width: 16, display: "inline-flex", justifyContent: "center" }}>
+          {opts?.checked ? "✓" : ""}
+        </span>
+        <span style={{ flex: 1 }}>{label}</span>
+        {opts?.hint && <span style={{ opacity: 0.6, fontSize: 12 }}>{opts.hint}</span>}
+      </button>
+    );
+  };
+
+  const menu = (k: MenuKey, children: ReactNode) => {
+    if (openMenu !== k) return null;
+    return (
+      <div
+        role="menu"
+        style={{
+          position: "absolute",
+          top: 34,
+          left: 0,
+          minWidth: 240,
+          background: "#fff",
+          border: "1px solid rgba(0,0,0,0.12)",
+          borderRadius: 12,
+          boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
+          padding: 6,
+          zIndex: 50,
+        }}
+      >
+        {children}
+      </div>
+    );
+  };
+
+  const menuWrap = (k: MenuKey, children: ReactNode) => (
+    <div style={{ position: "relative" }}>
+      {menuBtn(k)}
+      {menu(k, children)}
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+      {menuWrap(
+        "File",
+        <>
+          {item("Download (Ctrl+S)", onDownload, { disabled })}
+          {item("Copy file path", onCopyPath, { disabled })}
+          <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "6px 6px" }} />
+          {item("Command Palette (Ctrl+Shift+P)", () => run("editor.action.quickCommand"), {
+            disabled,
+          })}
+        </>
+      )}
+
+      {menuWrap(
+        "Edit",
+        <>
+          {item("Undo", () => run("undo"), { disabled, hint: "Ctrl+Z" })}
+          {item("Redo", () => run("redo"), { disabled, hint: "Ctrl+Y" })}
+          <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "6px 6px" }} />
+          {item("Cut", () => run("editor.action.clipboardCutAction"), { disabled, hint: "Ctrl+X" })}
+          {item("Copy", () => run("editor.action.clipboardCopyAction"), { disabled: false, hint: "Ctrl+C" })}
+          {item("Paste", () => run("editor.action.clipboardPasteAction"), { disabled, hint: "Ctrl+V" })}
+          <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "6px 6px" }} />
+          {item("Find", () => run("actions.find"), { disabled: false, hint: "Ctrl+F" })}
+          {item("Replace", () => run("editor.action.startFindReplaceAction"), { disabled: false, hint: "Ctrl+H" })}
+          <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "6px 6px" }} />
+          {item("Format Document", () => run("editor.action.formatDocument"), { disabled })}
+          {item("Toggle Line Comment", () => run("editor.action.commentLine"), { disabled })}
+          {item("Toggle Block Comment", () => run("editor.action.blockComment"), { disabled })}
+        </>
+      )}
+
+      {menuWrap(
+        "Selection",
+        <>
+          {item("Select All", () => run("editor.action.selectAll"), { disabled: false, hint: "Ctrl+A" })}
+          <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "6px 6px" }} />
+          {item("Expand Selection", () => run("editor.action.smartSelect.expand"), { disabled })}
+          {item("Shrink Selection", () => run("editor.action.smartSelect.shrink"), { disabled })}
+          <div style={{ height: 1, background: "rgba(0,0,0,0.08)", margin: "6px 6px" }} />
+          {item("Add Cursor Above", () => run("editor.action.insertCursorAbove"), { disabled })}
+          {item("Add Cursor Below", () => run("editor.action.insertCursorBelow"), { disabled })}
+          {item("Add Next Occurrence", () => run("editor.action.addSelectionToNextFindMatch"), { disabled })}
+          {item("Add Previous Occurrence", () => run("editor.action.addSelectionToPreviousFindMatch"), { disabled })}
+        </>
+      )}
+
+      {menuWrap(
+        "View",
+        <>
+          {item("Toggle Word Wrap", onToggleWordWrap, { disabled: false, checked: wordWrapOn })}
+          {item("Toggle Minimap", onToggleMinimap, { disabled: false, checked: minimapOn })}
+          {item("Toggle Line Numbers", onToggleLineNumbers, { disabled: false, checked: lineNumbersOn })}
+        </>
+      )}
+
+      {menuWrap(
+        "Go",
+        <>
+          {item("Go to Line…", () => run("editor.action.gotoLine"), { disabled: false, hint: "Ctrl+G" })}
+          {item("Go to Definition", () => run("editor.action.revealDefinition"), { disabled })}
+          {item("Peek Definition", () => run("editor.action.peekDefinition"), { disabled })}
+          {item("Find References", () => run("editor.action.referenceSearch.trigger"), { disabled })}
+          {item("Rename Symbol", () => run("editor.action.rename"), { disabled })}
+        </>
+      )}
+
+      {menuWrap(
+        "Help",
+        <>
+          {item("Shortcuts: Ctrl+S (download), Ctrl+Shift+P, Ctrl+F, Ctrl+G", () => {}, { disabled: false })}
+          {item("Tip: Editing is CRDT-synced; presence is ephemeral.", () => {}, { disabled: false })}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function CodeEditor({ filePath, initialContent }: Props) {
-  const { doc, awareness, canViewDoc, canEditDoc, effectiveDocLevel, getPathAccess, requestEdit, role, isHost } =
-    useCollab();
+  const {
+    doc,
+    awareness,
+    canViewDoc,
+    canEditDoc,
+    effectiveDocLevel,
+    getPathAccess,
+    requestEdit,
+    role,
+    isHost,
+  } = useCollab();
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -100,6 +349,13 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
 
   const bindingRef = useRef<MonacoBinding | null>(null);
 
+  // UI state
+  const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
+  const [cursorPos, setCursorPos] = useState<{ line: number; col: number } | null>(null);
+  const [wordWrapOn, setWordWrapOn] = useState(true);
+  const [minimapOn, setMinimapOn] = useState(false);
+  const [lineNumbersOn, setLineNumbersOn] = useState(true);
+
   const language = useMemo(() => inferLanguage(filePath), [filePath]);
 
   const canView = useMemo(() => (filePath ? canViewDoc(filePath) : true), [filePath, canViewDoc]);
@@ -111,6 +367,69 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     const acc = getPathAccess(filePath, { asGuest: !isHost });
     return acc.ok ? null : acc.reason;
   }, [filePath, getPathAccess, isHost]);
+
+  // Close menus on outside click / Escape
+  useEffect(() => {
+    if (!openMenu) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenMenu(null);
+    };
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      // if click is inside any menu button/dropdown, don't close
+      if (t.closest?.("[data-menubar-root='1']")) return;
+      setOpenMenu(null);
+    };
+
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onClick);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onClick);
+    };
+  }, [openMenu]);
+
+  const run = (actionId: string) => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const action = ed.getAction(actionId);
+    if (!action) return;
+    void action.run();
+  };
+
+  const getCurrentValue = () => {
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    return model?.getValue() ?? "";
+  };
+
+  const onDownload = () => {
+    if (!filePath) return;
+    const content = getCurrentValue();
+    downloadTextFile(basename(filePath), content);
+  };
+
+  const onCopyPath = () => {
+    if (!filePath) return;
+    void copyToClipboard(filePath);
+  };
+
+  const applyViewOptions = () => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    ed.updateOptions({
+      wordWrap: wordWrapOn ? "on" : "off",
+      minimap: { enabled: minimapOn },
+      lineNumbers: lineNumbersOn ? "on" : "off",
+    });
+  };
+
+  useEffect(() => {
+    applyViewOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordWrapOn, minimapOn, lineNumbersOn]);
 
   // Ensure the editor is ALWAYS showing the correct model for the clicked file
   useEffect(() => {
@@ -280,8 +599,47 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     </div>
   );
 
+  const menuDisabled = !filePath || !canView;
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      {/* Menubar */}
+      <div
+        data-menubar-root="1"
+        style={{
+          padding: "6px 10px",
+          borderBottom: "1px solid #e5e7eb",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <MenuBar
+          disabled={menuDisabled}
+          openMenu={openMenu}
+          setOpenMenu={setOpenMenu}
+          run={run}
+          onDownload={onDownload}
+          onCopyPath={onCopyPath}
+          onToggleWordWrap={() => setWordWrapOn((v) => !v)}
+          onToggleMinimap={() => setMinimapOn((v) => !v)}
+          onToggleLineNumbers={() => setLineNumbersOn((v) => !v)}
+          wordWrapOn={wordWrapOn}
+          minimapOn={minimapOn}
+          lineNumbersOn={lineNumbersOn}
+        />
+
+        <div style={{ flex: "1 1 auto" }} />
+
+        {cursorPos && (
+          <div style={{ fontSize: 12, opacity: 0.65, userSelect: "none" }}>
+            Ln {cursorPos.line}, Col {cursorPos.col}
+          </div>
+        )}
+      </div>
+
+      {/* File header */}
       <div
         style={{
           padding: "8px 12px",
@@ -341,18 +699,65 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
             onMount={(editor, monacoApi) => {
               editorRef.current = editor;
               monacoRef.current = monacoApi as unknown as typeof monaco;
-              editor.updateOptions({ readOnly: !canEdit });
+
+              // initial view options
+              editor.updateOptions({
+                readOnly: !canEdit,
+                wordWrap: wordWrapOn ? "on" : "off",
+                minimap: { enabled: minimapOn },
+                lineNumbers: lineNumbersOn ? "on" : "off",
+              });
+
+              // Track cursor for status
+              const disp = editor.onDidChangeCursorPosition(() => {
+                const pos = editor.getPosition();
+                if (!pos) return;
+                setCursorPos({ line: pos.lineNumber, col: pos.column });
+              });
+
+              // Commands (save/download + command palette)
+              try {
+                const m = monacoApi as unknown as typeof monaco;
+                editor.addCommand(m.KeyMod.CtrlCmd | m.KeyCode.KeyS, () => {
+                  // download is allowed even when read-only
+                  onDownload();
+                });
+                editor.addCommand(m.KeyMod.CtrlCmd | m.KeyMod.Shift | m.KeyCode.KeyP, () => {
+                  run("editor.action.quickCommand");
+                });
+              } catch {
+                // ignore if monaco keycodes change
+              }
+
+              // cleanup cursor tracker on unmount
+              (editorRef.current as any).__cursorDisp = disp;
+            }}
+            onUnmount={() => {
+              const ed = editorRef.current as any;
+              try {
+                ed?.__cursorDisp?.dispose?.();
+              } catch {
+                // ignore
+              }
+              editorRef.current = null;
+              monacoRef.current = null;
             }}
             options={{
               automaticLayout: true,
-              minimap: { enabled: false },
+              minimap: { enabled: minimapOn },
               fontSize: 14,
               tabSize: 2,
               insertSpaces: true,
-              wordWrap: "on",
+              wordWrap: wordWrapOn ? "on" : "off",
               scrollBeyondLastLine: false,
               readOnly: !canEdit,
               domReadOnly: !canEdit,
+              lineNumbers: lineNumbersOn ? "on" : "off",
+              // keep editing UX close to mainstream editors
+              bracketPairColorization: { enabled: true } as any,
+              guides: { bracketPairs: true } as any,
+              padding: { top: 8, bottom: 8 } as any,
+              smoothScrolling: true,
             }}
           />
         )}

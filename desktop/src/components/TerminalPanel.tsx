@@ -20,10 +20,26 @@ const Y_TERM_REQUESTS = "terminal:requests"; // Y.Array<{id,userId,name,createdA
 
 const MAX_SHARED_LOG_CHARS = 200_000;
 
+function setTerminalOption(term: any, key: string, value: any) {
+  // xterm.js legacy API had setOption(); newer @xterm/xterm uses terminal.options
+  if (term && typeof term.setOption === "function") {
+    term.setOption(key, value);
+    return;
+  }
+  if (term && term.options) {
+    term.options[key] = value;
+  }
+}
+
 function makeId(prefix: string) {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? `${prefix}-${(crypto as any).randomUUID()}`
     : `${prefix}-${Math.random().toString(16).slice(2)}-${Date.now().toString(16)}`;
+}
+
+function isTauriRuntime() {
+  // Works for Tauri v2 and is harmless in the browser.
+  return typeof window !== "undefined" && !!(window as any).__TAURI__;
 }
 
 export default function TerminalPanel({ cwd }: Props) {
@@ -43,12 +59,18 @@ export default function TerminalPanel({ cwd }: Props) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
 
-  // Host-only PTY id
+  // Host-only PTY id (lives only in the host desktop app)
   const termIdRef = useRef<string | null>(null);
 
   // Buffer any output that arrives before we know which id is “ours”
   const pendingByIdRef = useRef<Record<string, string>>({});
   const exitedIdsRef = useRef<Record<string, true>>({});
+
+  // Track which guest-input items have been processed (host only)
+  const processedInputIdsRef = useRef<Record<string, true>>({});
+
+  // Capture the initial cwd (don’t restart the PTY on every file click)
+  const initialCwdRef = useRef<string | undefined>(cwd);
 
   // Shared state references
   const yLog = useMemo(() => doc.getText(Y_TERM_LOG), [doc]);
@@ -83,17 +105,26 @@ export default function TerminalPanel({ cwd }: Props) {
     []
   );
 
+  // Keep latest policy + ids in refs so observers don’t need to re-register
+  const policyRef = useRef(terminalPolicy);
+  const meRef = useRef(me);
+  useEffect(() => {
+    policyRef.current = terminalPolicy;
+    meRef.current = me;
+  }, [terminalPolicy, me]);
+
   const shared = terminalPolicy.shared;
   const controller = terminalPolicy.controllerUserId; // null | "*" | userId
   const canGuestSend =
     terminalPolicy.allowGuestInput &&
     (controller === "*" || controller === me.userId);
 
-  const hasLocalPty = isHost; // only host runs the PTY
+  // Only the host *desktop* app can spawn a PTY.
+  const hasLocalPty = isHost && isTauriRuntime();
   const allowLocalInput = hasLocalPty || canGuestSend;
 
   function appendSharedLog(data: string) {
-    if (!shared) return;
+    if (!policyRef.current.shared) return;
     if (!data) return;
 
     doc.transact(() => {
@@ -179,7 +210,14 @@ export default function TerminalPanel({ cwd }: Props) {
     });
   }
 
-  // Create xterm for everyone (viewer/editor/host)
+  // Keep xterm stdin enabled/disabled as control changes (without recreating PTY)
+  useEffect(() => {
+    const t = termRef.current;
+    if (!t) return;
+    setTerminalOption(t, "disableStdin", !allowLocalInput);
+  }, [allowLocalInput]);
+
+  // Create xterm for everyone; create PTY only for host desktop app.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -203,7 +241,6 @@ export default function TerminalPanel({ cwd }: Props) {
     term.loadAddon(fit);
 
     // VS Code-like keybindings:
-    // - Ctrl+C: SIGINT (never copy)
     // - Ctrl+Shift+C: Copy selection
     // - Ctrl+V / Ctrl+Shift+V: Paste
     term.attachCustomKeyEventHandler((ev) => {
@@ -235,89 +272,109 @@ export default function TerminalPanel({ cwd }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Show existing shared log for guests (and for host after reconnect)
-    const initial = yLog.toString();
-    if (initial) term.write(initial);
+    // Focus management (Monaco often steals focus)
+    const focusTerminal = () => term.focus();
+    container.addEventListener("mousedown", focusTerminal);
 
-    // Keep xterm size in sync with panel size
+    // Keep PTY size in sync with panel size (not only window resize)
     const ro = new ResizeObserver(() => {
-      fit.fit();
       const id = termIdRef.current;
-      if (hasLocalPty && id) {
-        invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
-      }
+      if (!id) return;
+
+      fit.fit();
+      invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
     });
     ro.observe(container);
 
-    // Context menu: selection => copy, else paste
-    const onContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      if (term.hasSelection()) void copySelection();
-      else void pasteFromClipboard();
-    };
-    container.addEventListener("contextmenu", onContextMenu);
-
-    // If guest has control, send typed bytes via Yjs queue
-    let disposeOnData: null | (() => void) = null;
-    if (!hasLocalPty && canGuestSend) {
-      const d = term.onData((data) => {
-        const item = { id: makeId("in"), userId: me.userId, data, createdAt: Date.now() };
-        doc.transact(() => yInput.push([item]));
-      });
-      disposeOnData = () => d.dispose();
-    }
-
-    // Observe shared log (guests, and host if sharing)
-    let lastLen = initial.length;
-    const onLog = () => {
-      const next = yLog.toString();
-      if (next.length <= lastLen) {
-        lastLen = next.length;
-        return;
+    // If we're not the host desktop app, stream shared log into xterm
+    let logLastLen = 0;
+    const renderLogDelta = () => {
+      const txt = yLog.toString();
+      if (txt.length > logLastLen) {
+        term.write(txt.slice(logLastLen));
+        logLastLen = txt.length;
       }
-      const delta = next.slice(lastLen);
-      lastLen = next.length;
-      term.write(delta);
     };
 
-    yLog.observe(onLog);
-
-    return () => {
-      yLog.unobserve(onLog);
-      if (disposeOnData) disposeOnData();
-
-      container.removeEventListener("contextmenu", onContextMenu);
-      ro.disconnect();
-
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [containerRef, doc, yLog, yInput, hasLocalPty, canGuestSend, allowLocalInput]);
-
-  // Host: create and manage PTY (Tauri backend) and mirror output into shared log if enabled.
-  useEffect(() => {
+    let unobserveLog: null | (() => void) = null;
     if (!hasLocalPty) {
+      renderLogDelta();
+      const obs = () => renderLogDelta();
+      yLog.observe(obs);
+      unobserveLog = () => yLog.unobserve(obs);
+
+      if (!isTauriRuntime()) {
+        term.writeln("\r\n[terminal disabled in web mode]");
+        term.writeln("Open the desktop app (Tauri) as the host to run a real shell.");
+        setStatusText("viewer (web)");
+      } else {
+        term.writeln("\r\n[terminal viewer]");
+        term.writeln(shared ? "Waiting for host output…" : "Host has not enabled sharing.");
+        setStatusText(shared ? "viewer" : "not shared");
+      }
+
       setReady(false);
-      setStatusText(shared ? "shared (view only)" : "not shared");
-      return;
     }
 
-    const term = termRef.current;
-    const fit = fitRef.current;
-    const container = containerRef.current;
-    if (!term || !fit || !container) return;
+    // Host: drain guest input queue into PTY (when allowed)
+    let unobserveInput: null | (() => void) = null;
+    const drainGuestInput = () => {
+      if (!hasLocalPty) return;
+      const p = policyRef.current;
+      if (!p.allowGuestInput) return;
 
-    term.writeln("[starting shell…]");
-    setStatusText("starting…");
+      const controllerUserId = p.controllerUserId;
+
+      const toSend: string[] = [];
+      const toDelete: number[] = [];
+
+      for (let i = 0; i < yInput.length; i++) {
+        const item = yInput.get(i);
+        if (!item?.id || !item?.userId || typeof item?.data !== "string") continue;
+
+        if (processedInputIdsRef.current[item.id]) {
+          toDelete.push(i);
+          continue;
+        }
+
+        const allowed =
+          controllerUserId === "*" || controllerUserId === item.userId;
+
+        if (!allowed) continue;
+
+        processedInputIdsRef.current[item.id] = true;
+        toSend.push(item.data);
+        toDelete.push(i);
+      }
+
+      if (toDelete.length) {
+        doc.transact(() => {
+          for (let j = toDelete.length - 1; j >= 0; j--) {
+            yInput.delete(toDelete[j], 1);
+          }
+        });
+      }
+
+      for (const chunk of toSend) writeRawToPty(chunk);
+    };
+
+    if (hasLocalPty) {
+      const obs = () => drainGuestInput();
+      yInput.observe(obs);
+      unobserveInput = () => yInput.unobserve(obs);
+    }
 
     let unlistenData: null | (() => void) = null;
     let unlistenExit: null | (() => void) = null;
-    let disposeOnData: null | (() => void) = null;
 
-    (async () => {
-      // Listen BEFORE creating the PTY (prevents missing the first prompt)
+    let disposeOnData: null | (() => void) = null;
+    let removeContextMenu: null | (() => void) = null;
+
+    const startHostPty = async () => {
+      term.writeln("[starting shell…]");
+      setStatusText("starting…");
+
+      // 1) Start listening BEFORE creating the PTY (prevents missing the first prompt)
       unlistenData = await listen<TerminalDataPayload>("terminal:data", (event) => {
         const { id, data } = event.payload;
         const activeId = termIdRef.current;
@@ -340,23 +397,44 @@ export default function TerminalPanel({ cwd }: Props) {
           term.writeln("\r\n[process exited]");
           setReady(false);
           setStatusText("exited");
-          appendSharedLog("\r\n[process exited]\r\n");
         }
       });
 
-      // Create PTY
+      // 2) Create PTY (retry without cwd if it fails)
       const cols = Math.max(10, term.cols || 80);
       const rows = Math.max(5, term.rows || 24);
 
-      const id = await invoke<string>("terminal_create", {
-        cols,
-        rows,
-        cwd: cwd ?? undefined,
-      });
+      let id: string;
+      try {
+        id = await invoke<string>("terminal_create", {
+          cols,
+          rows,
+          cwd: initialCwdRef.current ?? undefined,
+        });
+      } catch (e) {
+        term.writeln(`\r\n[terminal_create failed with cwd] ${String(e)}`);
+        term.writeln("[retrying without cwd…]");
+        id = await invoke<string>("terminal_create", { cols, rows });
+      }
 
       termIdRef.current = id;
 
-      // Flush buffered output (including the first prompt)
+      // Context menu: VS Code terminal behavior
+      // - If there's a selection -> copy
+      // - Else -> paste
+      const onContextMenu = (e: MouseEvent) => {
+        e.preventDefault();
+        const t = termRef.current;
+        if (t?.hasSelection()) {
+          void copySelection();
+        } else {
+          void pasteFromClipboard();
+        }
+      };
+      container.addEventListener("contextmenu", onContextMenu);
+      removeContextMenu = () => container.removeEventListener("contextmenu", onContextMenu);
+
+      // 3) Flush any buffered output (including the first prompt)
       const buffered = pendingByIdRef.current[id];
       if (buffered) {
         term.write(buffered);
@@ -368,38 +446,54 @@ export default function TerminalPanel({ cwd }: Props) {
         term.writeln("\r\n[process exited]");
         setReady(false);
         setStatusText("exited");
-        appendSharedLog("\r\n[process exited]\r\n");
         return;
       }
 
-      // Wire input AFTER id is set
+      // 4) Wire input AFTER id is set (host local keystrokes)
       const d = term.onData((data) => {
         invoke("terminal_write", { id, data }).catch(() => {});
       });
       disposeOnData = () => d.dispose();
 
-      // Force prompt redraw
+      // 5) Force a prompt in case the first one was missed
       await invoke("terminal_write", { id, data: "\r" }).catch(() => {});
 
-      // Sync size once more
+      // 6) Sync size once more
       fit.fit();
       await invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
 
+      // Start draining any queued guest input
+      drainGuestInput();
+
       term.writeln("\r\n[terminal ready]");
-      appendSharedLog("\r\n[terminal ready]\r\n");
       setReady(true);
-      setStatusText(shared ? "ready (shared)" : "ready (local)");
+      setStatusText("ready");
       requestAnimationFrame(() => term.focus());
-    })().catch((e) => {
-      term.writeln(`\r\n[terminal init error] ${String(e)}`);
-      appendSharedLog(`\r\n[terminal init error] ${String(e)}\r\n`);
-      setReady(false);
-      setStatusText("error");
-    });
+    };
+
+    if (hasLocalPty) {
+      startHostPty().catch((e) => {
+        term.writeln(`\r\n[terminal init error] ${String(e)}`);
+        term.writeln(
+          "\r\nIf this is a CWD/path error, the terminal will still work without CWD.\r\n" +
+            "If you’re running in a browser, run `pnpm tauri dev` instead."
+        );
+        setReady(false);
+        setStatusText("error");
+      });
+    }
 
     return () => {
-      if (disposeOnData) disposeOnData();
+      container.removeEventListener("mousedown", focusTerminal);
+      ro.disconnect();
 
+      if (disposeOnData) disposeOnData();
+      if (removeContextMenu) removeContextMenu();
+
+      if (unobserveLog) unobserveLog();
+      if (unobserveInput) unobserveInput();
+
+      // These are functions returned by `listen`, they should be called directly
       if (unlistenData) unlistenData();
       if (unlistenExit) unlistenExit();
 
@@ -407,108 +501,12 @@ export default function TerminalPanel({ cwd }: Props) {
       termIdRef.current = null;
       if (id) invoke("terminal_kill", { id }).catch(() => {});
 
+      term.dispose();
       setReady(false);
     };
-  }, [cwd, hasLocalPty, shared]); // rebuild PTY on cwd change; sharing toggles only affects mirroring
-
-  // Host: consume shared input queue (from controller) and send to PTY
-  useEffect(() => {
-    if (!hasLocalPty) return;
-
-    const onInput = (event: any) => {
-      if (!terminalPolicy.allowGuestInput) return;
-      const controllerId = terminalPolicy.controllerUserId;
-      if (!controllerId) return;
-
-      const items = yInput.toArray();
-      if (items.length === 0) return;
-
-      // Consume in-order and clear queue
-      const toConsume = items.filter((x: any) => {
-        const uid = String(x?.userId ?? "");
-        if (!uid) return false;
-        if (controllerId === "*") return uid !== me.userId; // any guest
-        return uid === controllerId;
-      });
-
-      if (toConsume.length === 0) return;
-
-      for (const it of toConsume) {
-        const data = String(it.data ?? "");
-        if (data) writeRawToPty(data);
-      }
-
-      // delete everything (simple; in real impl keep unconsumed)
-      doc.transact(() => {
-        yInput.delete(0, yInput.length);
-      });
-    };
-
-    yInput.observe(onInput);
-    // run once in case queue already has items
-    onInput(null);
-
-    return () => yInput.unobserve(onInput);
-  }, [doc, yInput, hasLocalPty, terminalPolicy.allowGuestInput, terminalPolicy.controllerUserId, me.userId]);
-
-  const terminalBody = !isHost && !shared ? (
-    <div style={{ padding: 12, color: "#e5e7eb", background: "#0b0f14", height: "100%" }}>
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>Terminal not shared</div>
-      <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 12 }}>
-        Only the host can run commands. Ask the host to share the terminal output if needed.
-      </div>
-      <button
-        onClick={() => requestTerminalControl()}
-        style={{
-          padding: "6px 10px",
-          border: "1px solid #374151",
-          background: "#111827",
-          color: "#e5e7eb",
-          cursor: "pointer",
-        }}
-      >
-        Request access
-      </button>
-    </div>
-  ) : (
-    <div style={{ flex: "1 1 auto", minHeight: 0, background: "#0b0f14" }}>
-      <div ref={containerRef} style={{ height: "100%", width: "100%" }} />
-    </div>
-  );
-
-  const pendingMine = terminalRequests.some((r) => r.userId === me.userId);
-  const pendingCount = terminalRequests.length;
-
-  const controllerOptions = useMemo(() => {
-    const opts: Array<{ value: string; label: string }> = [
-      { value: "", label: "Host only" },
-      { value: "*", label: "Any guest (dangerous)" },
-    ];
-
-    for (const m of members) {
-      if (m.userId === me.userId) continue;
-      opts.push({ value: m.userId, label: `${m.name} (${m.role})` });
-    }
-
-    return opts;
-  }, [members, me.userId]);
-
-  function grantNextRequest() {
-    if (!isHost) return;
-    const next = terminalRequests[0];
-    if (!next) return;
-
-    doc.transact(() => {
-      // set controller to requester
-      yPolicy.set("shared", true);
-      yPolicy.set("allowGuestInput", true);
-      yPolicy.set("controllerUserId", next.userId);
-
-      // remove request
-      const idx = yRequests.toArray().findIndex((x: any) => x?.id === next.id);
-      if (idx >= 0) yRequests.delete(idx, 1);
-    });
-  }
+    // NOTE: we intentionally do NOT depend on `cwd` so the PTY doesn't restart on file clicks
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, hasLocalPty, shared]);
 
   return (
     <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column" }}>
@@ -527,102 +525,10 @@ export default function TerminalPanel({ cwd }: Props) {
         <div style={{ fontWeight: 600 }}>Terminal</div>
         <div style={{ fontSize: 12, opacity: 0.75 }}>{statusText}</div>
 
-        {isHost ? (
-          <>
-            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, opacity: 0.9 }}>
-              <input
-                type="checkbox"
-                checked={shared}
-                onChange={(e) => setTerminalPolicy({ shared: e.target.checked })}
-              />
-              Share output
-            </label>
-
-            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, opacity: 0.9 }}>
-              <input
-                type="checkbox"
-                checked={terminalPolicy.allowGuestInput}
-                disabled={!shared}
-                onChange={(e) => setTerminalPolicy({ allowGuestInput: e.target.checked })}
-              />
-              Allow input
-            </label>
-
-            <select
-              value={controller ?? ""}
-              disabled={!shared || !terminalPolicy.allowGuestInput}
-              onChange={(e) => setTerminalPolicy({ controllerUserId: e.target.value || null })}
-              style={{ padding: "4px 6px" }}
-              title="Who can control the terminal (input is queued to host)"
-            >
-              {controllerOptions.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-
-            {pendingCount > 0 && (
-              <button
-                onClick={grantNextRequest}
-                style={{
-                  padding: "4px 10px",
-                  border: "1px solid #374151",
-                  background: "#111827",
-                  color: "#e5e7eb",
-                  cursor: "pointer",
-                }}
-                title="Grant terminal control to the oldest requester"
-              >
-                Grant request ({pendingCount})
-              </button>
-            )}
-
-            <button
-              onClick={clearShared}
-              disabled={!shared}
-              style={{
-                padding: "4px 10px",
-                border: "1px solid #374151",
-                background: shared ? "#111827" : "#0b0f14",
-                color: "#e5e7eb",
-                cursor: shared ? "pointer" : "not-allowed",
-              }}
-              title="Clears the shared terminal transcript (does not affect the local shell)"
-            >
-              Clear shared
-            </button>
-          </>
-        ) : shared ? (
-          <>
-            <div style={{ fontSize: 12, opacity: 0.8 }}>shared</div>
-            {canGuestSend ? (
-              <div style={{ fontSize: 12, opacity: 0.8 }}>• you have control</div>
-            ) : (
-              <button
-                onClick={() => requestTerminalControl()}
-                disabled={pendingMine}
-                style={{
-                  padding: "4px 10px",
-                  border: "1px solid #374151",
-                  background: pendingMine ? "#0b0f14" : "#111827",
-                  color: "#e5e7eb",
-                  cursor: pendingMine ? "not-allowed" : "pointer",
-                }}
-                title="Request terminal control from host"
-              >
-                {pendingMine ? "Requested" : "Request control"}
-              </button>
-            )}
-          </>
-        ) : null}
-
         <select
           value={selectedTask}
           onChange={(e) => setSelectedTask(e.target.value)}
-          disabled={!hasLocalPty || !ready}
           style={{ marginLeft: 8, padding: "4px 6px" }}
-          title="Host-only convenience tasks"
         >
           <option value="">Run task…</option>
           {tasks.map((t) => (
@@ -633,14 +539,14 @@ export default function TerminalPanel({ cwd }: Props) {
         </select>
 
         <button
-          disabled={!hasLocalPty || !ready || !selectedTask}
+          disabled={!allowLocalInput || !selectedTask}
           onClick={() => sendLine(selectedTask)}
           style={{
             padding: "4px 10px",
             border: "1px solid #374151",
-            background: hasLocalPty && ready && selectedTask ? "#111827" : "#0b0f14",
+            background: allowLocalInput && selectedTask ? "#111827" : "#0b0f14",
             color: "#e5e7eb",
-            cursor: hasLocalPty && ready && selectedTask ? "pointer" : "not-allowed",
+            cursor: allowLocalInput && selectedTask ? "pointer" : "not-allowed",
           }}
         >
           Run
@@ -660,9 +566,26 @@ export default function TerminalPanel({ cwd }: Props) {
         >
           Clear
         </button>
+
+        {isHost && shared && (
+          <button
+            onClick={clearShared}
+            style={{
+              padding: "4px 10px",
+              border: "1px solid #374151",
+              background: "#111827",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Clear shared
+          </button>
+        )}
       </div>
 
-      {terminalBody}
+      <div style={{ flex: "1 1 auto", minHeight: 0, background: "#0b0f14" }}>
+        <div ref={containerRef} style={{ height: "100%", width: "100%" }} />
+      </div>
     </div>
   );
 }

@@ -176,6 +176,30 @@ function normalizePath(p: string) {
   return (p ?? "").replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
+function resolveWsBaseUrl(explicit?: string) {
+  const env = (import.meta as any)?.env?.VITE_COLLAB_WS_URL;
+  let raw = String(explicit ?? env ?? "ws://localhost:1234").trim();
+
+  // Strip accidental wrapping quotes that break WebSocket URLs on Windows/.env.
+  raw = raw.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1").trim();
+
+  // Allow users to paste Render HTTPS URLs; convert to ws/wss.
+  if (raw.startsWith("https://")) raw = "wss://" + raw.slice("https://".length);
+  else if (raw.startsWith("http://")) raw = "ws://" + raw.slice("http://".length);
+
+  // y-websocket expects a base URL; room is appended by the client provider.
+  // If a path was accidentally included, drop it.
+  try {
+    const u = new URL(raw);
+    raw = u.origin; // keeps ws/wss scheme
+  } catch {
+    // keep as-is
+  }
+
+  raw = raw.replace(/\/+$/, "");
+  return raw;
+}
+
 function globToRegExp(pattern: string) {
   // Very small glob: * => any chars, ? => single char
   // Everything else escaped.
@@ -248,7 +272,7 @@ const Y_TERM_REQUESTS = "terminal:requests"; // array<{id,userId,name,createdAt}
 export function CollabProvider({
   children,
   defaultRoomId = "default-room",
-  wsUrl = "ws://localhost:1234",
+  wsUrl,
   displayName = "Anonymous",
   userId,
   token,
@@ -301,6 +325,8 @@ export function CollabProvider({
     color: randomColor(),
   });
 
+  const resolvedWsUrl = useMemo(() => resolveWsBaseUrl(wsUrl), [wsUrl]);
+
   // Keep name fresh (user might login after first render)
   useEffect(() => {
     meRef.current = {
@@ -318,11 +344,16 @@ export function CollabProvider({
     // NOTE:
     // This client is configured to work with the `y-websocket` server (e.g. `npx y-websocket --port 1234`).
     // If you are running a Hocuspocus server instead, swap this back to HocuspocusProvider.
-    const provider = new WebsocketProvider(wsUrl, roomId, doc, {
+    const provider = new WebsocketProvider(resolvedWsUrl, roomId, doc, {
       connect: true,
     } as any);
 
     const awareness = provider.awareness;
+    const envRaw = (import.meta as any)?.env?.VITE_COLLAB_WS_URL;
+    const attemptedUrl = `${resolvedWsUrl}/${encodeURIComponent(roomId)}`;
+    // eslint-disable-next-line no-console
+    console.log("[collab] ws connect", { wsBase: resolvedWsUrl, roomId, attemptedUrl, env: envRaw });
+
 
     // Presence
     awareness.setLocalStateField("user", {
@@ -342,6 +373,28 @@ export function CollabProvider({
 
     provider.on("status", onStatus);
 
+    // Some builds of y-websocket provider emit these events (safe even if unused).
+    const onConnError = (e: any) => {
+      if (!alive) return;
+      setLastError(
+        (prev) =>
+          prev ??
+          `WebSocket error\nURL: ${attemptedUrl}\nVITE_COLLAB_WS_URL: ${String(envRaw ?? "").trim() || "(unset)"}`
+      );
+    };
+    const onConnClose = (e: any) => {
+      if (!alive) return;
+      const reason = stringifyReason(e);
+      setStatus("disconnected");
+      setLastError(
+        (prev) =>
+          prev ??
+          `${reason}\nURL: ${attemptedUrl}\nVITE_COLLAB_WS_URL: ${String(envRaw ?? "").trim() || "(unset)"}`
+      );
+    };
+    provider.on("connection-error", onConnError);
+    provider.on("connection-close", onConnClose);
+
     // Capture close codes/reasons from the underlying WebSocket when available.
     // (Browsers may report code 1005 when the peer closes without a close frame.)
     let wsCloseHandler: any = null;
@@ -352,11 +405,24 @@ export function CollabProvider({
       wsCloseHandler = (e: any) => {
         if (!alive) return;
         setStatus("disconnected");
-        setLastError((prev) => prev ?? stringifyReason(e));
+        const reason = stringifyReason(e);
+        setLastError(
+          (prev) =>
+            prev ??
+            `${reason}
+URL: ${attemptedUrl}
+VITE_COLLAB_WS_URL: ${String(envRaw ?? "").trim() || "(unset)"}`
+        );
       };
-      wsErrorHandler = () => {
+      wsErrorHandler = (e: any) => {
         if (!alive) return;
-        setLastError((prev) => prev ?? "WebSocket error");
+        setLastError(
+          (prev) =>
+            prev ??
+            `WebSocket error
+URL: ${attemptedUrl}
+VITE_COLLAB_WS_URL: ${String(envRaw ?? "").trim() || "(unset)"}`
+        );
       };
       ws.addEventListener?.("close", wsCloseHandler);
       ws.addEventListener?.("error", wsErrorHandler);
@@ -490,6 +556,8 @@ export function CollabProvider({
 
       provider.off("status", onStatus);
       provider.off("status", statusWatcher);
+      provider.off("connection-error", onConnError);
+      provider.off("connection-close", onConnClose);
 
       // best-effort detach underlying ws listeners
       const ws = (provider as any)?.ws;
@@ -513,7 +581,7 @@ export function CollabProvider({
       doc.destroy();
       setSession(null);
     };
-  }, [wsUrl, roomId, token]);
+  }, [resolvedWsUrl, roomId, token]);
 
   const me = meRef.current;
   const isHost = hostId === me.userId;
@@ -803,7 +871,7 @@ export function CollabProvider({
     };
 
     return {
-      wsUrl,
+      wsUrl: resolvedWsUrl,
       roomId,
       setRoomId,
 
@@ -844,7 +912,7 @@ export function CollabProvider({
     };
   }, [
     session,
-    wsUrl,
+    resolvedWsUrl,
     roomId,
     status,
     lastError,
