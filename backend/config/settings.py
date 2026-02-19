@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "rest_framework_simplejwt",
     "accounts",
+    "rooms",
 ]
 
 MIDDLEWARE = [
@@ -140,3 +141,6 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^tauri://localhost$",
     r"^http://tauri\.localhost$",
 ]
+
+
+COLLAB_WS_URL = "ws://127.0.0.1:1234"  # in production set to wss://your-domain

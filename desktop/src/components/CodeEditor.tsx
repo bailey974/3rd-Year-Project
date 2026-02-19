@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import type * as monaco from "monaco-editor";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 import { MonacoBinding } from "y-monaco";
 
 import { useCollab } from "../collab/CollabProvider";
@@ -9,12 +8,15 @@ import { getOrCreateYText, normalizePath } from "../collab/yFiles";
 
 type Props = {
   filePath?: string | null;
+
+  // ✅ content coming from your backend (/fs/read)
+  // used to seed shared Y.Text when it's empty, so you do NOT rely on Tauri local FS permissions.
+  initialContent?: string;
 };
 
 function inferLanguage(filePath?: string | null): string {
   if (!filePath) return "plaintext";
   const lower = filePath.toLowerCase();
-
   const ext = lower.split(".").pop() ?? "";
   switch (ext) {
     case "ts":
@@ -51,26 +53,73 @@ function inferLanguage(filePath?: string | null): string {
   }
 }
 
-export default function CodeEditor({ filePath }: Props) {
+function toMonacoUri(monacoApi: typeof monaco, filePath: string) {
+  const norm = filePath.replace(/\\/g, "/");
+
+  // Windows: C:/...
+  if (/^[a-zA-Z]:\//.test(norm)) {
+    return monacoApi.Uri.parse(`file:///${encodeURI(norm)}`);
+  }
+
+  // Posix: /...
+  if (norm.startsWith("/")) {
+    return monacoApi.Uri.parse(`file://${encodeURI(norm)}`);
+  }
+
+  return monacoApi.Uri.parse(`file:///${encodeURI(norm)}`);
+}
+
+export default function CodeEditor({ filePath, initialContent }: Props) {
   const { doc, awareness } = useCollab();
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Guard against out-of-order async loads when switching files quickly
+  // Guard against out-of-order async work
   const loadSeq = useRef(0);
 
   // Monaco refs
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof monaco | null>(null);
+
   const bindingRef = useRef<MonacoBinding | null>(null);
 
   const language = useMemo(() => inferLanguage(filePath), [filePath]);
 
-  // 1) Seed the shared Y.Text from disk (ONLY if it’s empty)
+  // ✅ ensure the editor is ALWAYS showing the correct model for the clicked file
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monacoApi = monacoRef.current;
+    if (!editor || !monacoApi) return;
+
+    // cleanup binding whenever model changes
+    bindingRef.current?.destroy();
+    bindingRef.current = null;
+
+    if (!filePath) return;
+
+    const uri = toMonacoUri(monacoApi, filePath);
+
+    let model = monacoApi.editor.getModel(uri);
+    if (!model) {
+      model = monacoApi.editor.createModel("", language, uri);
+    } else {
+      const currentLang = monacoApi.editor.getModelLanguage(model);
+      if (currentLang !== language) {
+        monacoApi.editor.setModelLanguage(model, language);
+      }
+    }
+
+    if (editor.getModel() !== model) {
+      editor.setModel(model);
+    }
+  }, [filePath, language]);
+
+  // ✅ seed the shared Y.Text from initialContent (ONLY if it’s empty)
   useEffect(() => {
     const seq = ++loadSeq.current;
 
-    async function seedFromDisk() {
+    async function seedFromInitialContent() {
       if (!filePath) {
         setErr(null);
         setLoading(false);
@@ -79,8 +128,16 @@ export default function CodeEditor({ filePath }: Props) {
 
       const yText = getOrCreateYText(doc, filePath);
 
-      // If room already has content, do NOT overwrite it with local disk.
+      // If room already has content, do NOT overwrite it.
       if (yText.length > 0) {
+        setErr(null);
+        setLoading(false);
+        return;
+      }
+
+      const seed = (initialContent ?? "").toString();
+      if (!seed) {
+        // no seed available; still allow editing
         setErr(null);
         setLoading(false);
         return;
@@ -90,20 +147,16 @@ export default function CodeEditor({ filePath }: Props) {
       setErr(null);
 
       try {
-        const text = await readTextFile(filePath);
-
         // file switched while loading
         if (loadSeq.current !== seq) return;
 
-        // still empty? then seed
         if (yText.length === 0) {
           doc.transact(() => {
-            yText.insert(0, text);
+            yText.insert(0, seed);
           });
         }
       } catch (e: any) {
         if (loadSeq.current === seq) {
-          // It's fine to still allow editing; we just show the error.
           setErr(e?.message ?? String(e));
         }
       } finally {
@@ -111,10 +164,10 @@ export default function CodeEditor({ filePath }: Props) {
       }
     }
 
-    seedFromDisk();
-  }, [doc, filePath]);
+    seedFromInitialContent();
+  }, [doc, filePath, initialContent]);
 
-  // 2) Bind Monaco model <-> Y.Text whenever file or editor changes
+  // ✅ bind Monaco model <-> Y.Text and re-bind when Monaco swaps models
   useEffect(() => {
     const editor = editorRef.current;
 
@@ -124,22 +177,34 @@ export default function CodeEditor({ filePath }: Props) {
 
     if (!editor || !filePath) return;
 
-    const model = editor.getModel();
-    if (!model) return;
+    const bind = () => {
+      bindingRef.current?.destroy();
+      bindingRef.current = null;
 
-    // presence: show what file I'm on
-    (awareness as any).setLocalStateField("activeFile", normalizePath(filePath));
+      const model = editor.getModel();
+      if (!model) return;
 
-    const yText = getOrCreateYText(doc, filePath);
+      // presence: show what file I'm on
+      (awareness as any).setLocalStateField("activeFile", normalizePath(filePath));
 
-    bindingRef.current = new MonacoBinding(
-      yText,
-      model,
-      new Set([editor]),
-      awareness
-    );
+      const yText = getOrCreateYText(doc, filePath);
+
+      bindingRef.current = new MonacoBinding(
+        yText,
+        model,
+        new Set([editor]),
+        awareness
+      );
+    };
+
+    // bind now
+    bind();
+
+    // bind again whenever Monaco swaps model internally
+    const disp = editor.onDidChangeModel(() => bind());
 
     return () => {
+      disp.dispose();
       bindingRef.current?.destroy();
       bindingRef.current = null;
     };
@@ -190,12 +255,14 @@ export default function CodeEditor({ filePath }: Props) {
 
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         <Editor
-          // This helps Monaco keep distinct models per file
-          path={filePath ?? "inmemory://model"}
+          // model identity is handled explicitly in the effect via monaco.editor + setModel
+          // keep this stable to avoid @monaco-editor/react creating weird URIs on Windows
+          path={"inmemory://editor"}
           language={language}
           theme="vs"
-          onMount={(editor) => {
+          onMount={(editor, monacoApi) => {
             editorRef.current = editor;
+            monacoRef.current = monacoApi as unknown as typeof monaco;
           }}
           options={{
             automaticLayout: true,

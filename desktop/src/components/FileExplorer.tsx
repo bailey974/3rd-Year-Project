@@ -1,50 +1,60 @@
-// src/components/FileExplorer.tsx
 import React, { useEffect, useMemo, useState } from "react";
 
-type FsEntry = {
+type AnyEntry = any;
+
+type NormalEntry = {
   name: string;
   path: string;
   type: "file" | "dir";
-  size?: number;
-  modified?: string;
 };
 
 type ListResponse = {
   path: string;
-  entries: FsEntry[];
+  entries: AnyEntry[];
 };
 
-type ReadResponse = {
-  path: string;
-  content: string;
-};
+type ReadResponse =
+  | { content: string } // expected
+  | { data: string } // fallback
+  | string; // fallback
 
 export type RequestJson = <T = any>(path: string, opts?: RequestInit) => Promise<T>;
 
 type Props = {
   requestJson: RequestJson;
-
-  // starting folder (server-dependent). Examples: "", "/", "C:\\Users\\..."
   initialPath?: string;
-
-  // called when a file is opened
-  onOpenFile?: (filePath: string, content: string) => void;
-
-  // optional UI: highlight selected file
   activePath?: string;
-
-  className?: string;
+  onOpenFile?: (path: string, content?: string) => void;
 };
+
+function normalizeEntry(e: AnyEntry): NormalEntry {
+  const rawPath: string =
+    e.path ?? e.full_path ?? e.file_path ?? e.filePath ?? e.abs_path ?? "";
+  const rawName: string =
+    e.name ?? e.filename ?? e.base ?? e.basename ?? rawPath.split(/[\\/]/).pop() ?? "";
+
+  const isDir =
+    e.type === "dir" ||
+    e.kind === "dir" ||
+    e.is_dir === true ||
+    e.isDir === true ||
+    e.directory === true;
+
+  return {
+    name: rawName,
+    path: rawPath,
+    type: isDir ? "dir" : "file",
+  };
+}
 
 export default function FileExplorer({
   requestJson,
   initialPath = "",
-  onOpenFile,
   activePath,
-  className,
+  onOpenFile,
 }: Props) {
   const [cwd, setCwd] = useState(initialPath);
-  const [entries, setEntries] = useState<FsEntry[]>([]);
+  const [entries, setEntries] = useState<NormalEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -52,9 +62,8 @@ export default function FileExplorer({
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return entries;
-
-    return entries.filter((e) => {
-      const hay = `${e.name} ${e.path}`.toLowerCase();
+    return entries.filter((x) => {
+      const hay = `${x.name} ${x.path}`.toLowerCase();
       return hay.includes(q);
     });
   }, [entries, filter]);
@@ -63,93 +72,80 @@ export default function FileExplorer({
     setLoading(true);
     setErr(null);
     try {
-      // Adjust this route to your backend
-      // Expected: { path, entries: [{name, path, type:'file'|'dir'}...] }
-      const data = await requestJson<ListResponse>(`/fs/list?path=${encodeURIComponent(path)}`);
+      const res = await requestJson<ListResponse>(
+        `/fs/list?path=${encodeURIComponent(path)}`
+      );
 
-      const sorted = [...(data.entries ?? [])].sort((a, b) => {
-        if (a.type !== b.type) return a.type === "dir" ? -1 : 1; // dirs first
+      const normalized = (res.entries ?? []).map(normalizeEntry);
+
+      normalized.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
 
-      setCwd(data.path ?? path);
-      setEntries(sorted);
+      setCwd(res.path ?? path);
+      setEntries(normalized);
     } catch (e: any) {
-      setErr(e?.message ?? "Failed to load directory.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function openEntry(e: FsEntry) {
-    if (e.type === "dir") {
-      await refresh(e.path);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setErr(null);
-
-      // Adjust this route to your backend
-      // Expected: { path, content }
-      const data = await requestJson<ReadResponse>(`/fs/read?path=${encodeURIComponent(e.path)}`);
-
-      onOpenFile?.(data.path ?? e.path, data.content ?? "");
-    } catch (ex: any) {
-      setErr(ex?.message ?? "Failed to open file.");
+      setErr(e?.message ?? "Failed to load directory");
     } finally {
       setLoading(false);
     }
   }
 
   function goUp() {
-    // Works for both "/" and "C:\..." style paths
-    const p = cwd.replace(/[\\\/]+$/, "");
+    const p = (cwd ?? "").replace(/[\\\/]+$/, "");
     if (!p) return;
 
     const sep = p.includes("\\") ? "\\" : "/";
     const idx = p.lastIndexOf(sep);
-    if (idx <= 0) {
-      // back to root-ish
-      refresh(sep);
+
+    if (idx <= 0) refresh(sep);
+    else refresh(p.slice(0, idx));
+  }
+
+  async function openEntry(e: NormalEntry) {
+    if (e.type === "dir") {
+      await refresh(e.path);
       return;
     }
-    refresh(p.slice(0, idx));
+
+    // ✅ CRITICAL: always fire immediately so App can set activePath and CodeEditor can react
+    onOpenFile?.(e.path);
+
+    // Optional: try to read content from backend; but don't block opening on it
+    try {
+      const readRes = await requestJson<ReadResponse>(
+        `/fs/read?path=${encodeURIComponent(e.path)}`
+      );
+
+      const content =
+        typeof readRes === "string"
+          ? readRes
+          : (readRes as any)?.content ?? (readRes as any)?.data ?? "";
+
+      if (typeof content === "string") {
+        onOpenFile?.(e.path, content);
+      }
+    } catch {
+      // ignore read failure; file is still "opened" by path selection
+    }
   }
 
   useEffect(() => {
-    refresh(initialPath);
+    void refresh(initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
-    <div
-      className={className}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        borderRight: "1px solid rgba(255,255,255,0.08)",
-        minWidth: 260,
-        width: 320,
-        height: "100%",
-      }}
-    >
-      {/* Header / Toolbar */}
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "center" }}>
-        <div style={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div style={{ fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
           Files
         </div>
-
-        <button onClick={goUp} disabled={loading} style={btnStyle}>
-          Up
-        </button>
-        <button onClick={() => refresh()} disabled={loading} style={btnStyle}>
-          Refresh
-        </button>
+        <button onClick={goUp} disabled={loading} style={btnStyle}>Up</button>
+        <button onClick={() => refresh()} disabled={loading} style={btnStyle}>Refresh</button>
       </div>
 
-      {/* Current path */}
       <div
         title={cwd}
         style={{
@@ -164,46 +160,40 @@ export default function FileExplorer({
         {cwd || "(root)"}
       </div>
 
-      {/* Filter */}
       <div style={{ padding: "0 10px 10px 10px" }}>
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter files..."
+          placeholder="Filter..."
           style={{
             width: "100%",
             padding: "8px 10px",
             borderRadius: 8,
-            border: "1px solid rgba(255,255,255,0.12)",
-            background: "transparent",
-            color: "inherit",
+            border: "1px solid #d1d5db",
             outline: "none",
           }}
         />
       </div>
 
-      {/* Errors */}
       {err && (
-        <div style={{ padding: "0 10px 10px 10px", color: "#ff7b7b", fontSize: 12 }}>
+        <div style={{ padding: "0 10px 10px 10px", color: "crimson", fontSize: 12 }}>
           {err}
         </div>
       )}
 
-      {/* List */}
       <div style={{ flex: 1, overflow: "auto" }}>
         {loading && entries.length === 0 ? (
           <div style={{ padding: 10, opacity: 0.75 }}>Loading…</div>
         ) : filtered.length === 0 ? (
-          <div style={{ padding: 10, opacity: 0.75 }}>No files.</div>
+          <div style={{ padding: 10, opacity: 0.75 }}>No entries.</div>
         ) : (
           filtered.map((e) => {
             const isActive = !!activePath && activePath === e.path;
-
             return (
               <div
                 key={e.path}
-                onDoubleClick={() => openEntry(e)}
-                onClick={() => e.type === "file" && openEntry(e)}
+                onClick={() => void openEntry(e)}
+                onDoubleClick={() => void openEntry(e)}
                 title={e.path}
                 style={{
                   padding: "8px 10px",
@@ -211,10 +201,10 @@ export default function FileExplorer({
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  background: isActive ? "rgba(255,255,255,0.08)" : "transparent",
+                  background: isActive ? "rgba(0,0,0,0.06)" : "transparent",
                 }}
               >
-                <span style={{ width: 16, textAlign: "center", opacity: 0.9 }}>
+                <span style={{ width: 18, textAlign: "center" }}>
                   {e.type === "dir" ? "📁" : "📄"}
                 </span>
                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -232,8 +222,7 @@ export default function FileExplorer({
 const btnStyle: React.CSSProperties = {
   padding: "6px 10px",
   borderRadius: 8,
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "transparent",
-  color: "inherit",
+  border: "1px solid #d1d5db",
+  background: "#fff",
   cursor: "pointer",
 };
