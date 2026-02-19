@@ -3,10 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "HOST=0.0.0.0 PORT=$PORT npx y-websocket"
   },
   "dependencies": {
-    "ws": "^8.18.0",
-    "y-websocket": "^2.0.4"
+    "@y/websocket-server": "^0.1.2"
   }
 }
