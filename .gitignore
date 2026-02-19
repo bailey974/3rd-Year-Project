@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# python env
+.venv/
+
+# build outputs
+dist/
+**/dist/
+desktop/src-tauri/target/
+**/target/
+
+# misc
+.DS_Store
+*.log
