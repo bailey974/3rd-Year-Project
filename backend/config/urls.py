@@ -10,11 +10,18 @@ def root(_req):
     return JsonResponse({"service": "backend", "status": "running"})
 
 urlpatterns = [
+    # root
+    path("", root),
+
+    # health
+    path("healthz/", healthz),
+
+    # admin + APIs
     path("admin/", admin.site.urls),
     path("api/auth/", include("accounts.urls")),
-    path("fs/list", fs_list),
-    path("fs/read", fs_read),
-    path("healthz/", healthz),
     path("api/rooms/", include("rooms.urls")),
 
+    # file system endpoints
+    path("fs/list/", fs_list),
+    path("fs/read/", fs_read),
 ]
