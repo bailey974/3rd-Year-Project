@@ -10,9 +10,8 @@ def root(_req):
     return JsonResponse({"service": "backend", "status": "running"})
 
 urlpatterns = [
-    path("", root),                 # ✅ add this
+    path("", root),            
     path("healthz/", healthz),
-
     path("admin/", admin.site.urls),
     path("api/auth/", include("accounts.urls")),
     path("api/rooms/", include("rooms.urls")),
