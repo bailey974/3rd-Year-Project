@@ -712,6 +712,29 @@ function AppShell() {
 
   const [roomDialogOpen, setRoomDialogOpen] = useState(false);
 
+  useEffect(() => {
+    const handleCodeOpen = async (e: any) => {
+      if (e.detail?.path) {
+        // Normalize path separators to forward slashes
+        const normalizedPath = e.detail.path.replace(/\\/g, "/").replace(/\/+/g, "/");
+        setActivePath(normalizedPath);
+
+        // Fetch content like FileExplorer does to initialize the shared Yjs editor properly
+        try {
+          const res = await authedRequestJson<any>(`/fs/read?path=${encodeURIComponent(normalizedPath)}`);
+          const content = typeof res === "string" ? res : res?.content ?? res?.data ?? "";
+          if (typeof content === "string") {
+            setActiveContent(content);
+          }
+        } catch {
+          // ignore error, editor will show empty or whatever is synced
+        }
+      }
+    };
+    window.addEventListener("code-open-file", handleCodeOpen);
+    return () => window.removeEventListener("code-open-file", handleCodeOpen);
+  }, [authedRequestJson]);
+
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       {/* Toolbar */}
@@ -802,7 +825,7 @@ function AppShell() {
           <FileExplorer
             requestJson={authedRequestJson}
             activePath={activePath}
-            onOpenFile={(path: string, content: string) => {
+            onOpenFile={(path: string, content?: string) => {
               // ✅ critical: CodeEditor must receive the new filePath
               setActivePath(path);
               // ✅ also pass initial content so editor can seed Yjs without local FS permissions
@@ -874,7 +897,7 @@ function CollabWrapper() {
     <CollabProvider
       defaultRoomId={meta?.docName ?? "main-room"}
       displayName={user?.email?.split("@")[0] ?? "Guest"}
-          wsUrl={import.meta.env.VITE_COLLAB_WS_URL ?? "wss://threerd-year-project-s8vz.onrender.com"}
+      wsUrl={import.meta.env.VITE_COLLAB_WS_URL ?? "wss://threerd-year-project-s8vz.onrender.com"}
 
     >
       <AppShell />

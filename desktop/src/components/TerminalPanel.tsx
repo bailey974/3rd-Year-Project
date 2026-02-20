@@ -376,6 +376,21 @@ export default function TerminalPanel({ cwd }: Props) {
       // 1) Start listening BEFORE creating the PTY (prevents missing the first prompt)
       unlistenData = await listen<TerminalDataPayload>("terminal:data", (event) => {
         const { id, data } = event.payload;
+
+        // Intercept custom code command output
+        if (data.includes("__TAURI_OPEN_FILE__|")) {
+          const match = data.match(/__TAURI_OPEN_FILE__\|([^\r\n]+)/);
+          if (match && match[1]) {
+            const rawPath = match[1].trim();
+            // Fire custom event for App.tsx to catch
+            window.dispatchEvent(
+              new CustomEvent("code-open-file", { detail: { path: rawPath } })
+            );
+          }
+          // Don't print the marker
+          return;
+        }
+
         const activeId = termIdRef.current;
 
         if (activeId && id === activeId) {

@@ -46,7 +46,13 @@ fn default_shell_command() -> CommandBuilder {
     #[cfg(target_os = "windows")]
     {
         let mut cmd = CommandBuilder::new("powershell.exe");
-        cmd.args(["-NoProfile", "-NoLogo"]);
+        cmd.args([
+            "-NoProfile",
+            "-NoLogo",
+            "-NoExit",
+            "-Command",
+            "function code { Write-Host '__TAURI_OPEN_FILE__|' -NoNewline; Write-Host (Join-Path $PWD $args[0]) }",
+        ]);
         cmd
     }
 

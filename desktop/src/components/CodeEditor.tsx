@@ -316,8 +316,8 @@ function MenuBar(props: {
       {menuWrap(
         "Help",
         <>
-          {item("Shortcuts: Ctrl+S (download), Ctrl+Shift+P, Ctrl+F, Ctrl+G", () => {}, { disabled: false })}
-          {item("Tip: Editing is CRDT-synced; presence is ephemeral.", () => {}, { disabled: false })}
+          {item("Shortcuts: Ctrl+S (download), Ctrl+Shift+P, Ctrl+F, Ctrl+G", () => { }, { disabled: false })}
+          {item("Tip: Editing is CRDT-synced; presence is ephemeral.", () => { }, { disabled: false })}
         </>
       )}
     </div>
@@ -348,6 +348,19 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
   const monacoRef = useRef<typeof monaco | null>(null);
 
   const bindingRef = useRef<MonacoBinding | null>(null);
+
+  useEffect(() => {
+    return () => {
+      const ed = editorRef.current as any;
+      try {
+        ed?.__cursorDisp?.dispose?.();
+      } catch {
+        // ignore
+      }
+      editorRef.current = null;
+      monacoRef.current = null;
+    };
+  }, []);
 
   // UI state
   const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
@@ -452,7 +465,7 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     if (!model) {
       model = monacoApi.editor.createModel("", language, uri);
     } else {
-      const currentLang = monacoApi.editor.getModelLanguage(model);
+      const currentLang = model.getLanguageId();
       if (currentLang !== language) {
         monacoApi.editor.setModelLanguage(model, language);
       }
@@ -731,16 +744,6 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
 
               // cleanup cursor tracker on unmount
               (editorRef.current as any).__cursorDisp = disp;
-            }}
-            onUnmount={() => {
-              const ed = editorRef.current as any;
-              try {
-                ed?.__cursorDisp?.dispose?.();
-              } catch {
-                // ignore
-              }
-              editorRef.current = null;
-              monacoRef.current = null;
             }}
             options={{
               automaticLayout: true,
