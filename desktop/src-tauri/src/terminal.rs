@@ -51,7 +51,7 @@ fn default_shell_command() -> CommandBuilder {
             "-NoLogo",
             "-NoExit",
             "-Command",
-            "function code { Write-Host '__TAURI_OPEN_FILE__|' -NoNewline; Write-Host (Join-Path $PWD $args[0]) }",
+            "function code { $p = (Resolve-Path $args[0]).Path; $r = (git rev-parse --show-toplevel).Replace('/', '\\'); $rel = $p.Replace($r, '').Replace('\\', '/').Trim('/'); Write-Host '__TAURI_OPEN_FILE__|' -NoNewline; Write-Host $rel }",
         ]);
         cmd
     }

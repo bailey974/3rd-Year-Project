@@ -429,6 +429,48 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
     void copyToClipboard(filePath);
   };
 
+  const onRunCode = () => {
+    if (!filePath) return;
+    const lower = filePath.toLowerCase();
+    const ext = lower.split(".").pop() ?? "";
+
+    let cmd = "";
+    switch (ext) {
+      case "py":
+        cmd = `python "${filePath}"`;
+        break;
+      case "js":
+        cmd = `node "${filePath}"`;
+        break;
+      case "ts":
+      case "tsx":
+        cmd = `npx tsx "${filePath}"`;
+        break;
+      case "java":
+        cmd = `java "${filePath}"`;
+        break;
+      case "c":
+      case "cpp":
+        // Windows fallback style basic compilation
+        cmd = `gcc "${filePath}" -o out && ./out`;
+        break;
+      case "go":
+        cmd = `go run "${filePath}"`;
+        break;
+      case "rs":
+        cmd = `cargo run`;
+        break;
+      default:
+        alert(`No default run command configured for .${ext} files.`);
+        return;
+    }
+
+    // Dispatch an event to send to TerminalPanel
+    window.dispatchEvent(
+      new CustomEvent("terminal-run-command", { detail: { command: cmd } })
+    );
+  };
+
   const applyViewOptions = () => {
     const ed = editorRef.current;
     if (!ed) return;
@@ -577,6 +619,28 @@ export default function CodeEditor({ filePath, initialContent }: Props) {
 
   const headerRight = (
     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      {filePath && canEdit && (
+        <button
+          onClick={onRunCode}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: "none",
+            background: "#10b981",
+            color: "#fff",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+          title="Run active file in terminal"
+        >
+          <span style={{ fontSize: 10 }}>▶</span> Run
+        </button>
+      )}
+
       {filePath && (
         <span
           style={{

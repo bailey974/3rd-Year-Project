@@ -160,6 +160,27 @@ export default function TerminalPanel({ cwd }: Props) {
     }
   }
 
+  // Listen for "Run Code" custom events from CodeEditor
+  useEffect(() => {
+    const handleRunCmd = (e: Event) => {
+      const customEvent = e as CustomEvent<{ command: string }>;
+      if (customEvent.detail?.command) {
+        const line = customEvent.detail.command;
+        if (hasLocalPty) {
+          writeRawToPty(line + "\r\n");
+          termRef.current?.focus();
+        } else if (canGuestSend) {
+          const item = { id: makeId("in"), userId: me.userId, data: line + "\r\n", createdAt: Date.now() };
+          doc.transact(() => yInput.push([item]));
+          termRef.current?.focus();
+        }
+      }
+    };
+    window.addEventListener("terminal-run-command", handleRunCmd);
+    return () => window.removeEventListener("terminal-run-command", handleRunCmd);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasLocalPty, canGuestSend, me.userId, doc, yInput]);
+
   async function pasteFromClipboard() {
     try {
       const text = await navigator.clipboard.readText();
