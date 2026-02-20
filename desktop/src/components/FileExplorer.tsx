@@ -1,6 +1,19 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useCollab } from "../collab/CollabProvider";
-
+import {
+  Folder,
+  FolderOpen,
+  FileCode,
+  FileJson,
+  FileImage,
+  FileText,
+  File,
+  Terminal,
+  RefreshCw,
+  CornerLeftUp,
+  Settings,
+  ShieldAlert,
+} from "lucide-react";
 type AnyEntry = any;
 
 type NormalEntry = {
@@ -396,44 +409,46 @@ export default function FileExplorer({
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "center" }}>
-        <div style={{ fontWeight: 700, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
-          Files
+      <div style={{ padding: "8px 10px", display: "flex", gap: 6, alignItems: "center" }}>
+        <div style={{ fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "#4B5563", flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
+          Explorer
         </div>
 
         {isHost && (
           <>
-            <button onClick={() => setPolicyOpen(true)} style={btnStyle}>
-              Policy
+            <button onClick={() => setPolicyOpen(true)} style={iconBtnStyle} title="Sharing Policy">
+              <Settings size={14} color="#4B5563" />
             </button>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, opacity: 0.85 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, opacity: 0.85, marginRight: 8 }}>
               <input
                 type="checkbox"
                 checked={previewAsViewer}
                 onChange={(e) => setPreviewAsViewer(e.target.checked)}
               />
-              Preview as viewer
+              Preview
             </label>
           </>
         )}
 
-        <button onClick={goUp} disabled={loading} style={btnStyle}>
-          Up
+        <button onClick={goUp} disabled={loading} style={iconBtnStyle} title="Go Up (Parent Directory)">
+          <CornerLeftUp size={14} color={loading ? "#9CA3AF" : "#4B5563"} />
         </button>
-        <button onClick={() => refresh()} disabled={loading} style={btnStyle}>
-          Refresh
+        <button onClick={() => refresh()} disabled={loading} style={iconBtnStyle} title="Refresh Explorer">
+          <RefreshCw size={14} color={loading ? "#9CA3AF" : "#4B5563"} />
         </button>
       </div>
 
       <div
         title={cwd}
         style={{
-          padding: "0 10px 10px 10px",
+          padding: "0 10px 8px 10px",
           fontSize: 12,
-          opacity: 0.75,
+          color: "#6B7280",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
+          borderBottom: "1px solid #E5E7EB",
+          marginBottom: 8
         }}
       >
         {cwd || "(root)"}{" "}
@@ -474,6 +489,22 @@ export default function FileExplorer({
         ) : (
           filtered.map((e) => {
             const isActive = !!activePath && activePath === e.path;
+
+            // Helper to determine the file icon
+            const getFileIcon = (fileName: string) => {
+              const lower = fileName.toLowerCase();
+              if (lower.endsWith(".py")) return <FileCode size={16} color="#3572A5" />; // Blue
+              if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return <FileCode size={16} color="#3178C6" />; // TS Blue
+              if (lower.endsWith(".js") || lower.endsWith(".jsx")) return <FileCode size={16} color="#F7DF1E" />; // JS Yellow
+              if (lower.endsWith(".json")) return <FileJson size={16} color="#CB3837" />; // Red
+              if (lower.endsWith(".html")) return <FileCode size={16} color="#E34F26" />; // HTML Orange
+              if (lower.endsWith(".css") || lower.endsWith(".scss")) return <FileCode size={16} color="#1572B6" />; // CSS Blue
+              if (lower.endsWith(".md")) return <FileText size={16} color="#555555" />;
+              if (lower.match(/\.(png|jpe?g|gif|svg|ico)$/)) return <FileImage size={16} color="#10B981" />; // Green
+              if (lower.endsWith(".sh") || lower.endsWith(".bash")) return <Terminal size={16} color="#4ADE80" />;
+              return <File size={16} color="#6B7280" />; // Gray fallback
+            };
+
             return (
               <div
                 key={e.path}
@@ -481,21 +512,38 @@ export default function FileExplorer({
                 onDoubleClick={() => void openEntry(e)}
                 title={e.path}
                 style={{
-                  padding: "8px 10px",
+                  padding: "6px 10px 6px 14px",
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  background: isActive ? "rgba(0,0,0,0.06)" : "transparent",
+                  fontSize: 13,
+                  color: isActive ? "#000" : "#374151", // darker text for active
+                  background: isActive ? "rgba(0, 0, 0, 0.08)" : "transparent",
+                  transition: "background 0.1s ease",
+                  userSelect: "none"
+                }}
+                onMouseEnter={(ev) => {
+                  if (!isActive) ev.currentTarget.style.background = "rgba(0, 0, 0, 0.04)";
+                }}
+                onMouseLeave={(ev) => {
+                  if (!isActive) ev.currentTarget.style.background = "transparent";
                 }}
               >
-                <span style={{ width: 18, textAlign: "center" }}>{e.type === "dir" ? "📁" : "📄"}</span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 18 }}>
+                  {e.type === "dir" ? (
+                    <Folder size={16} color="#EAB308" fill="#FEF08A" />
+                  ) : (
+                    getFileIcon(e.name)
+                  )}
+                </div>
                 <span
                   style={{
                     flex: 1,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
+                    fontFamily: "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif",
                   }}
                 >
                   {e.name}
@@ -511,12 +559,15 @@ export default function FileExplorer({
   );
 }
 
-const btnStyle: React.CSSProperties = {
-  padding: "6px 10px",
-  borderRadius: 8,
-  border: "1px solid #d1d5db",
-  background: "#fff",
+const iconBtnStyle: React.CSSProperties = {
+  padding: "4px",
+  borderRadius: 4,
+  border: "none",
+  background: "transparent",
   cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
 };
 
 const btn: React.CSSProperties = {
