@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useCollab } from "../collab/CollabProvider";
 
 type TerminalDataPayload = { id: string; data: string };
@@ -38,8 +38,7 @@ function makeId(prefix: string) {
 }
 
 function isTauriRuntime() {
-  // Works for Tauri v2 and is harmless in the browser.
-  return typeof window !== "undefined" && !!(window as any).__TAURI__;
+  return isTauri();
 }
 
 export default function TerminalPanel({ cwd }: Props) {
@@ -282,7 +281,7 @@ export default function TerminalPanel({ cwd }: Props) {
       if (!id) return;
 
       fit.fit();
-      invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
+      invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => { });
     });
     ro.observe(container);
 
@@ -451,16 +450,16 @@ export default function TerminalPanel({ cwd }: Props) {
 
       // 4) Wire input AFTER id is set (host local keystrokes)
       const d = term.onData((data) => {
-        invoke("terminal_write", { id, data }).catch(() => {});
+        invoke("terminal_write", { id, data }).catch(() => { });
       });
       disposeOnData = () => d.dispose();
 
       // 5) Force a prompt in case the first one was missed
-      await invoke("terminal_write", { id, data: "\r" }).catch(() => {});
+      await invoke("terminal_write", { id, data: "\r" }).catch(() => { });
 
       // 6) Sync size once more
       fit.fit();
-      await invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => {});
+      await invoke("terminal_resize", { id, cols: term.cols, rows: term.rows }).catch(() => { });
 
       // Start draining any queued guest input
       drainGuestInput();
@@ -476,7 +475,7 @@ export default function TerminalPanel({ cwd }: Props) {
         term.writeln(`\r\n[terminal init error] ${String(e)}`);
         term.writeln(
           "\r\nIf this is a CWD/path error, the terminal will still work without CWD.\r\n" +
-            "If you’re running in a browser, run `pnpm tauri dev` instead."
+          "If you’re running in a browser, run `pnpm tauri dev` instead."
         );
         setReady(false);
         setStatusText("error");
@@ -499,7 +498,7 @@ export default function TerminalPanel({ cwd }: Props) {
 
       const id = termIdRef.current;
       termIdRef.current = null;
-      if (id) invoke("terminal_kill", { id }).catch(() => {});
+      if (id) invoke("terminal_kill", { id }).catch(() => { });
 
       term.dispose();
       setReady(false);
